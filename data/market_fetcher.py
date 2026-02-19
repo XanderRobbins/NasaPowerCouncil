@@ -1,8 +1,9 @@
 """
-Fetch market data (prices, volume) for futures contracts.
+Fetch market data (prices, volume) for futures contracts using Yahoo Finance.
 """
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from typing import Optional, Dict
 from datetime import datetime
 from loguru import logger
@@ -13,25 +14,22 @@ from config.settings import MARKET_DATA_API_KEY, MARKET_DATA_PROVIDER
 
 class MarketDataFetcher:
     """
-    Fetch futures price data.
+    Fetch futures price data using Yahoo Finance.
     
-    This is a placeholder that generates synthetic data.
-    In production, connect to your data provider:
-    - Quandl
-    - Polygon.io
-    - Interactive Brokers API
-    - Bloomberg
-    - Refinitiv
-    etc.
+    Yahoo Finance is free and has good coverage of commodity futures.
+    No API key needed!
     """
     
-    def __init__(self, provider: str = MARKET_DATA_PROVIDER, api_key: Optional[str] = MARKET_DATA_API_KEY):
+    def __init__(self, provider: str = MARKET_DATA_PROVIDER, api_key: Optional[str] = None):
         self.provider = provider
         self.api_key = api_key
         
-        if self.api_key is None:
-            logger.warning("No market data API key configured. Using synthetic data.")
-    
+        logger.info(f"Market data provider: {self.provider}")
+        
+        # Import Yahoo ticker mappings
+        from config.yahoo_tickers import YAHOO_TICKERS
+        self.ticker_map = YAHOO_TICKERS
+        
     def fetch_futures_data(self, 
                           commodity: str, 
                           contract: str,
@@ -41,15 +39,15 @@ class MarketDataFetcher:
         Fetch futures price data.
         
         Args:
-            commodity: Commodity name
-            contract: Contract symbol (e.g., 'ZCZ24')
+            commodity: Commodity name (e.g., 'corn')
+            contract: Contract symbol (not used for Yahoo, uses continuous)
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             
         Returns:
             DataFrame with OHLCV data
         """
-        # Check cache
+        # Check cache first
         cache_params = {
             'commodity': commodity,
             'contract': contract,
@@ -60,120 +58,87 @@ class MarketDataFetcher:
         
         cached = cache_manager.get(cache_params, data_type='market', ttl_days=1)
         if cached is not None:
+            logger.info(f"Using cached data for {commodity}")
             return cached
         
-        # Fetch from provider
-        if self.provider == 'quandl' and self.api_key:
-            df = self._fetch_from_quandl(commodity, contract, start_date, end_date)
-        elif self.provider == 'polygon' and self.api_key:
-            df = self._fetch_from_polygon(commodity, contract, start_date, end_date)
-        else:
-            # Fallback: synthetic data
-            logger.warning(f"Using synthetic data for {commodity} {contract}")
-            df = self._generate_synthetic_data(start_date, end_date)
+        # Fetch from Yahoo Finance
+        df = self._fetch_from_yahoo(commodity, start_date, end_date)
         
-        # Cache
+        # Cache if successful
         if not df.empty:
             cache_manager.set(cache_params, df, data_type='market')
         
         return df
     
-    def _fetch_from_quandl(self, commodity: str, contract: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_from_yahoo(self, 
+                         commodity: str, 
+                         start_date: str, 
+                         end_date: str) -> pd.DataFrame:
         """
-        Fetch from Quandl.
-        
-        NOTE: Quandl futures data typically accessed via CHRIS database.
-        Example: CHRIS/CME_C1 for corn front month
+        Fetch from Yahoo Finance.
         """
         try:
-            import quandl
-            quandl.ApiConfig.api_key = self.api_key
+            # Get Yahoo ticker
+            from config.yahoo_tickers import get_yahoo_ticker
+            ticker_symbol = get_yahoo_ticker(commodity)
             
-            # Map commodity to Quandl symbols (you'll need to expand this)
-            quandl_codes = {
-                'corn': 'CHRIS/CME_C',
-                'soybeans': 'CHRIS/CME_S',
-                'wheat': 'CHRIS/CME_W',
-                'coffee': 'CHRIS/ICE_KC',
-                'natural_gas': 'CHRIS/CME_NG'
-            }
+            logger.info(f"Fetching {commodity} ({ticker_symbol}) from Yahoo Finance...")
             
-            code = quandl_codes.get(commodity)
-            if code is None:
-                logger.error(f"Quandl code not found for {commodity}")
+            # Create ticker object
+            ticker = yf.Ticker(ticker_symbol)
+            
+            # Fetch historical data
+            df = ticker.history(
+                start=start_date,
+                end=end_date,
+                interval='1d'
+            )
+            
+            if df.empty:
+                logger.warning(f"No data returned from Yahoo Finance for {ticker_symbol}")
                 return pd.DataFrame()
             
-            # Fetch continuous contract (front month)
-            df = quandl.get(f"{code}1", start_date=start_date, end_date=end_date)
-            
-            # Standardize columns
+            # Standardize column names
+            df = df.reset_index()
             df = df.rename(columns={
+                'Date': 'date',
                 'Open': 'open',
                 'High': 'high',
                 'Low': 'low',
-                'Last': 'close',
-                'Volume': 'volume',
-                'Open Interest': 'open_interest'
+                'Close': 'close',
+                'Volume': 'volume'
             })
             
-            df = df.reset_index().rename(columns={'Date': 'date'})
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch from Quandl: {e}")
-            return pd.DataFrame()
-    
-    def _fetch_from_polygon(self, commodity: str, contract: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        Fetch from Polygon.io.
-        
-        NOTE: Polygon uses different ticker formats.
-        """
-        try:
-            import requests
-            
-            # Map to Polygon ticker (example)
-            ticker_map = {
-                'corn': 'C',
-                'soybeans': 'S',
-                'natural_gas': 'NG'
-            }
-            
-            ticker = ticker_map.get(commodity, commodity.upper())
-            
-            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}"
-            params = {'apiKey': self.api_key}
-            
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'results' not in data:
-                return pd.DataFrame()
-            
-            df = pd.DataFrame(data['results'])
-            df['date'] = pd.to_datetime(df['t'], unit='ms')
-            
-            # Rename columns
-            df = df.rename(columns={
-                'o': 'open',
-                'h': 'high',
-                'l': 'low',
-                'c': 'close',
-                'v': 'volume'
-            })
-            
+            # Select relevant columns
             df = df[['date', 'open', 'high', 'low', 'close', 'volume']]
             
+            # Convert date to datetime
+            df['date'] = pd.to_datetime(df['date'])
+            
+            # Remove timezone info if present
+            if df['date'].dt.tz is not None:
+                df['date'] = df['date'].dt.tz_localize(None)
+            
+            # Sort by date
+            df = df.sort_values('date').reset_index(drop=True)
+            
+            logger.info(f"✓ Fetched {len(df)} records for {commodity} from Yahoo Finance")
+            logger.info(f"  Date range: {df['date'].min().date()} to {df['date'].max().date()}")
+            logger.info(f"  Price range: ${df['close'].min():.2f} to ${df['close'].max():.2f}")
+            
             return df
             
         except Exception as e:
-            logger.error(f"Failed to fetch from Polygon: {e}")
-            return pd.DataFrame()
+            logger.error(f"Failed to fetch from Yahoo Finance for {commodity}: {e}")
+            
+            # Fall back to synthetic data
+            logger.warning(f"Falling back to synthetic data for {commodity}")
+            return self._generate_synthetic_data(start_date, end_date)
     
-    def _generate_synthetic_data(self, start_date: str, end_date: str, initial_price: float = 100.0) -> pd.DataFrame:
+    def _generate_synthetic_data(self, 
+                                start_date: str, 
+                                end_date: str, 
+                                initial_price: float = 100.0) -> pd.DataFrame:
         """
         Generate synthetic price data for testing.
         
@@ -182,9 +147,9 @@ class MarketDataFetcher:
         dates = pd.date_range(start=start_date, end=end_date, freq='D')
         n = len(dates)
         
-        # Parameters
-        mu = 0.0001  # Drift
-        sigma = 0.015  # Volatility
+        # Parameters (more realistic for commodities)
+        mu = 0.0002  # Slight upward drift
+        sigma = 0.02  # 2% daily vol
         
         # Generate returns
         returns = np.random.normal(mu, sigma, n)
@@ -193,13 +158,13 @@ class MarketDataFetcher:
         prices = initial_price * np.exp(np.cumsum(returns))
         
         # Add intraday variation
-        high = prices * (1 + np.abs(np.random.normal(0, 0.005, n)))
-        low = prices * (1 - np.abs(np.random.normal(0, 0.005, n)))
+        high = prices * (1 + np.abs(np.random.normal(0, 0.01, n)))
+        low = prices * (1 - np.abs(np.random.normal(0, 0.01, n)))
         open_price = np.roll(prices, 1)
         open_price[0] = initial_price
         
         # Volume (random around mean)
-        volume = np.random.randint(10000, 50000, n)
+        volume = np.random.randint(5000, 20000, n)
         
         df = pd.DataFrame({
             'date': dates,
@@ -210,19 +175,38 @@ class MarketDataFetcher:
             'volume': volume
         })
         
+        logger.info(f"Generated synthetic data: {len(df)} records")
+        
         return df
     
-    def get_latest_price(self, commodity: str, contract: str) -> Optional[float]:
+    def get_latest_price(self, commodity: str, contract: str = None) -> Optional[float]:
         """Get most recent close price."""
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - pd.Timedelta(days=5)).strftime('%Y-%m-%d')
-        
-        df = self.fetch_futures_data(commodity, contract, start_date, end_date)
-        
-        if df.empty:
+        try:
+            from config.yahoo_tickers import get_yahoo_ticker
+            ticker_symbol = get_yahoo_ticker(commodity)
+            
+            ticker = yf.Ticker(ticker_symbol)
+            info = ticker.info
+            
+            # Try different price fields
+            price = info.get('regularMarketPrice') or info.get('previousClose')
+            
+            if price:
+                logger.info(f"Latest price for {commodity}: ${price:.2f}")
+                return float(price)
+            
+            # Fallback: get last close from history
+            hist = ticker.history(period='5d')
+            if not hist.empty:
+                price = hist['Close'].iloc[-1]
+                logger.info(f"Latest price for {commodity}: ${price:.2f}")
+                return float(price)
+            
             return None
-        
-        return df['close'].iloc[-1]
+            
+        except Exception as e:
+            logger.error(f"Failed to get latest price for {commodity}: {e}")
+            return None
 
 
 def fetch_market_data(commodity: str, contract: str, start_date: str, end_date: str) -> pd.DataFrame:

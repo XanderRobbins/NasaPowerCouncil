@@ -95,28 +95,32 @@ class BacktestEngine:
             all_data[commodity] = commodity_data
         
         return all_data
-    
+        
+
+
     def _fetch_all_market_data(self) -> Dict[str, pd.DataFrame]:
         """
         Fetch market data (prices, volume, etc.) for all commodities.
-        
-        NOTE: This is a placeholder. In production, connect to your data provider.
         """
+        from data.market_fetcher import MarketDataFetcher
+        
         market_data = {}
+        fetcher = MarketDataFetcher(provider='yahoo')  # Use Yahoo Finance!
         
         for commodity in self.commodities:
-            # Placeholder: Generate synthetic price data for demo
-            dates = pd.date_range(self.start_date, self.end_date, freq='D')
-            prices = 100 * np.exp(np.cumsum(np.random.randn(len(dates)) * 0.01))
+            logger.info(f"Fetching market data for {commodity}...")
             
-            market_data[commodity] = pd.DataFrame({
-                'date': dates,
-                'close': prices,
-                'volume': np.random.randint(10000, 50000, len(dates))
-            })
+            df = fetcher.fetch_futures_data(
+                commodity,
+                'N/A',  # Contract not needed for Yahoo
+                self.start_date.strftime('%Y-%m-%d'),
+                self.end_date.strftime('%Y-%m-%d')
+            )
+            
+            market_data[commodity] = df
         
         return market_data
-    
+
     def _generate_all_features(self, 
                               climate_data: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, pd.DataFrame]:
         """Generate features for all commodities."""
@@ -167,10 +171,22 @@ class BacktestEngine:
                     features_data[commodity]['date'] <= current_date
                 ]
                 
-                # Prices up to current date
+                # Prices up to current date  
                 prices_up_to_now = market_data[commodity][
                     market_data[commodity]['date'] <= current_date
-                ]['close']
+                ]
+                
+                # FIX: Align dates between features and prices
+                common_dates = pd.merge(
+                    features_up_to_now[['date']],
+                    prices_up_to_now[['date']],
+                    on='date',
+                    how='inner'
+                )['date']
+                
+                # Filter both to common dates only
+                features_up_to_now = features_up_to_now[features_up_to_now['date'].isin(common_dates)]
+                prices_up_to_now = prices_up_to_now[prices_up_to_now['date'].isin(common_dates)]['close']
                 
                 # Need at least 1 year of data to train
                 min_train = 252
@@ -265,6 +281,7 @@ class BacktestEngine:
                     self.entry_prices[commodity] = current_price
                 
                 self.positions[commodity] = new_position
+                self.entry_prices[commodity] = current_price
             
             # Log position changes
             if position_changes and idx % 50 == 0:
@@ -294,10 +311,6 @@ class BacktestEngine:
         return pd.DataFrame(results)
 
 
-
-
-
-
     def _generate_signal_for_date(self,
                                 features: pd.DataFrame,
                                 prices: pd.Series,
@@ -316,6 +329,11 @@ class BacktestEngine:
         y = model.compute_target(prices).values
         
         try:
+            # FIX: Ensure X and y have same length by trimming to shortest
+            min_len = min(len(X), len(y))
+            X = X[:min_len]
+            y = y[:min_len]
+            
             train_window = min(252 * 10, len(X) - 1)
             
             if len(X) < train_window + 1:
@@ -325,14 +343,15 @@ class BacktestEngine:
             y_train = y[-train_window-1:-1]
             X_test = X[-1:]
             
-            # Remove NaNs
+            # Handle NaNs in X FIRST
+            X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+            X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # THEN remove rows with NaN targets
             valid_idx = ~np.isnan(y_train)
             X_train = X_train[valid_idx]
             y_train = y_train[valid_idx]
             
-            X_train = np.nan_to_num(X_train, nan=0.0)
-            X_test = np.nan_to_num(X_test, nan=0.0)
-
             if len(y_train) < 100:
                 return 0.0
             
@@ -351,12 +370,16 @@ class BacktestEngine:
                 prices.iloc[-252:]
             )[0]
             
-            # DO NOT SMOOTH HERE - it happens in the main loop!
             return signal
         
         except Exception as e:
             logger.error(f"Error generating signal for {commodity}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return 0.0
+
+
+
 
 def run_backtest(start_date: str,
                 end_date: str,

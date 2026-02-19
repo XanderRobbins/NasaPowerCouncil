@@ -23,7 +23,7 @@ for path in [RAW_DATA_PATH, PROCESSED_DATA_PATH, MODEL_PATH, RESULTS_PATH]:
 NASA_POWER_BASE_URL = os.getenv('NASA_POWER_BASE_URL', 
                                 'https://power.larc.nasa.gov/api/temporal/daily/point')
 MARKET_DATA_API_KEY = os.getenv('MARKET_DATA_API_KEY')
-MARKET_DATA_PROVIDER = os.getenv('MARKET_DATA_PROVIDER', 'quandl')
+MARKET_DATA_PROVIDER = os.getenv('MARKET_DATA_PROVIDER', 'yahoo')
 
 # Database
 DATABASE_URL = os.getenv('DATABASE_URL', f'sqlite:///{DATA_STORAGE_PATH}/climate_futures.db')
