@@ -84,8 +84,8 @@ class RiskManager:
             return True, f"Signal reversed: {current_signal:.2f} (was short)"
         
         # Check if signal has weakened significantly
-        if abs(current_signal) < abs(current_position) * 0.3:
-            return True, f"Signal weakened: {current_signal:.2f} vs position {current_position:.2f}"
+        #if abs(current_signal) < abs(current_position) * 0.3:
+        #    return True, f"Signal weakened: {current_signal:.2f} vs position {current_position:.2f}"
         
         return False, "OK"
     

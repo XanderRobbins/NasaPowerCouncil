@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 USE_LLM_COUNCIL = os.getenv('USE_LLM_COUNCIL', 'false').lower() == 'true'
 
 # Phase 1 Commodities
-PHASE_1_COMMODITIES = ['corn']
+PHASE_1_COMMODITIES = ['corn', 'soybeans', 'wheat']
 
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')

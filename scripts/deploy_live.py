@@ -33,7 +33,7 @@ def main():
     logger.info("=" * 80)
     
     if not args.paper:
-        confirm = input("\n⚠️  You are about to deploy LIVE trading. Type 'CONFIRM' to proceed: ")
+        confirm = input("\n  You are about to deploy LIVE trading. Type 'CONFIRM' to proceed: ")
         if confirm != 'CONFIRM':
             logger.info("Deployment cancelled.")
             return

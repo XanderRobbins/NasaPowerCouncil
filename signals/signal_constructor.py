@@ -71,29 +71,25 @@ class SignalConstructor:
         Cap signal at ±cap.
         """
         return np.clip(signal, -self.cap, self.cap)
-    
-    def construct_signal(self, 
-                        predictions: np.ndarray, 
-                        returns: pd.Series) -> np.ndarray:
-        """
-        Full signal construction pipeline.
+
+    def construct_signal(self, predictions: np.ndarray, returns: pd.Series) -> np.ndarray:
+        # Debug input
+        logger.info(f"[DEBUG] Input predictions: {predictions}")
         
-        Args:
-            predictions: Raw model predictions (forward returns)
-            returns: Historical returns series (for vol calculation)
-            
-        Returns:
-            Standardized, capped signals
-        """
         # Standardize
         signal = self.standardize_signal(predictions, returns)
+        
+        # ADD THESE TWO LINES (you only added the second one):
+        realized_vol = self.compute_realized_vol(returns)  # ← THIS LINE IS MISSING
+        logger.info(f"[DEBUG] Realized vol (last): {realized_vol.iloc[-1]:.6f}")
+        logger.info(f"[DEBUG] Signal after standardization: {signal}")
         
         # Cap
         signal = self.cap_signal(signal)
         
-        logger.info(f"Constructed signal: mean={signal.mean():.4f}, std={signal.std():.4f}")
-        
         return signal
+
+
     
     def detect_regime_change(self, signal: np.ndarray, window: int = 60) -> np.ndarray:
         """

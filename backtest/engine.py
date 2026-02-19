@@ -1,6 +1,8 @@
 """
 Walk-forward backtesting engine with NO look-ahead bias.
 """
+from xml.parsers.expat import model
+
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -187,7 +189,7 @@ class BacktestEngine:
                 # Filter both to common dates only
                 features_up_to_now = features_up_to_now[features_up_to_now['date'].isin(common_dates)]
                 prices_up_to_now = prices_up_to_now[prices_up_to_now['date'].isin(common_dates)]['close']
-                
+
                 # Need at least 1 year of data to train
                 min_train = 252
                 if len(features_up_to_now) < min_train or len(prices_up_to_now) < min_train:
@@ -257,7 +259,7 @@ class BacktestEngine:
             # Update positions and compute PnL
             daily_pnl = 0.0
             position_changes = []
-            
+
             for commodity in self.commodities:
                 if commodity not in positions:
                     continue
@@ -269,14 +271,21 @@ class BacktestEngine:
                 old_position = self.positions[commodity]
                 new_position = positions[commodity]
                 
-                # PnL from PRICE CHANGE on existing position
+                # PnL from existing position
+                # Position is a FRACTION of portfolio (e.g., 0.10 = 10% of capital)
                 if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
-                    price_change = current_price - self.entry_prices[commodity]
-                    pnl = old_position * price_change * 50  # Multiply by point value (adjust per commodity)
+                    # Calculate return
+                    price_return = (current_price - self.entry_prices[commodity]) / self.entry_prices[commodity]
+                    
+                    # PnL = (Portfolio Value - Today's PnL so far) × Position × Return
+                    # Use previous day's portfolio value for position sizing
+                    portfolio_value_for_sizing = self.portfolio_value - daily_pnl
+                    
+                    pnl = portfolio_value_for_sizing * old_position * price_return
                     daily_pnl += pnl
                 
                 # Track position changes
-                if abs(new_position - old_position) > 0.01:  # 1% threshold
+                if abs(new_position - old_position) > 0.01:
                     position_changes.append(f"{commodity}: {old_position:.2f} -> {new_position:.2f}")
                     self.entry_prices[commodity] = current_price
                 
@@ -348,6 +357,7 @@ class BacktestEngine:
             X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
             
             # THEN remove rows with NaN targets
+            logger.info(f"[DEBUG] NaN rate in y_train: {np.isnan(y_train).sum() / len(y_train):.2%}")
             valid_idx = ~np.isnan(y_train)
             X_train = X_train[valid_idx]
             y_train = y_train[valid_idx]
@@ -364,11 +374,19 @@ class BacktestEngine:
             model.model.fit(X_train_scaled, y_train)
             prediction = model.model.predict(X_test_scaled)[0]
             
+
+            logger.info(f"[DEBUG] Raw prediction: {prediction:.6f}")
+            logger.info(f"[DEBUG] y_train stats: mean={y_train.mean():.6f}, std={y_train.std():.6f}, min={y_train.min():.6f}, max={y_train.max():.6f}")
+            logger.info(f"[DEBUG] Model R²: {model.model.score(X_train_scaled, y_train):.4f}")
+
+
             # Construct signal (RAW, no smoothing here)
+            returns = prices.pct_change().dropna()  # Calculate returns from prices
             signal = self.signal_constructor.construct_signal(
                 np.array([prediction]),
-                prices.iloc[-252:]
+                returns.iloc[-252:]  # Pass returns, not prices
             )[0]
+
             
             return signal
         
