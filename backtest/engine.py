@@ -139,9 +139,7 @@ class BacktestEngine:
     def _walk_forward_simulation(self,
                                 features_data: Dict[str, pd.DataFrame],
                                 market_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-        """
-        Walk-forward simulation (NO look-ahead).
-        """
+        """Walk-forward simulation (NO look-ahead)."""
         results = []
         
         # Determine simulation dates
@@ -151,7 +149,7 @@ class BacktestEngine:
         min_history = 252 * 10
         start_idx = min(min_history, len(sim_dates) - 252)
         
-        # MAINTAIN SIGNAL HISTORY for smoothing
+        # Maintain signal history for smoothing
         signal_history = {c: [] for c in self.commodities}
         
         for idx in range(start_idx, len(sim_dates)):
@@ -178,7 +176,7 @@ class BacktestEngine:
                     market_data[commodity]['date'] <= current_date
                 ]
                 
-                # FIX: Align dates between features and prices
+                # Align dates between features and prices
                 common_dates = pd.merge(
                     features_up_to_now[['date']],
                     prices_up_to_now[['date']],
@@ -189,15 +187,13 @@ class BacktestEngine:
                 # Filter both to common dates only
                 features_up_to_now = features_up_to_now[features_up_to_now['date'].isin(common_dates)]
                 prices_up_to_now = prices_up_to_now[prices_up_to_now['date'].isin(common_dates)]['close']
-
+                
                 # Need at least 1 year of data to train
                 min_train = 252
                 if len(features_up_to_now) < min_train or len(prices_up_to_now) < min_train:
-                    if idx == start_idx:
-                        logger.warning(f"Skipping {commodity} on {current_date}: only {len(features_up_to_now)} days")
                     continue
                 
-                # Train model and generate RAW signal (NO LOOK-AHEAD)
+                # Generate raw signal
                 raw_signal = self._generate_signal_for_date(
                     features_up_to_now,
                     prices_up_to_now,
@@ -208,11 +204,11 @@ class BacktestEngine:
                 # Add to history
                 signal_history[commodity].append(raw_signal)
                 
-                # Smooth using FULL history (this is the fix!)
+                # Smooth using full history
                 if len(signal_history[commodity]) > 1:
                     smoothed_signal = self.signal_smoother.smooth_ema(
                         np.array(signal_history[commodity])
-                    )[-1]  # Get last value
+                    )[-1]
                 else:
                     smoothed_signal = raw_signal
                 
@@ -223,23 +219,36 @@ class BacktestEngine:
                 commodity_signals[commodity] = smoothed_signal
                 commodity_vols[commodity] = vol
                 
-                # Log signal changes
+                # Log signals every 50 days
                 if idx % 50 == 0:
-                    logger.info(f"{commodity}: raw={raw_signal:.4f}, smoothed={smoothed_signal:.4f}")
+                    logger.info(f"{commodity}: raw={raw_signal:.4f}, smoothed={smoothed_signal:.4f}, vol={vol:.2%}")
             
             if not commodity_signals:
                 continue
             
-            # Run council (you have it commented out - enable for governance)
-            council_weights = {}
-            for commodity, signal in commodity_signals.items():
-                council_weights[commodity] = signal
+            # Council evaluation (optional - you can enable this)
+            council_weights = commodity_signals
             
             # Construct portfolio
-            positions = self.portfolio_constructor.compute_position_sizes(
-                council_weights,
-                commodity_vols
-            )
+
+
+            from config.settings import STRATEGY_MODE, MIN_SIGNAL_STRENGTH, FIXED_POSITION_SIZE
+
+            positions = {}
+
+            for commodity, signal in commodity_signals.items():
+                # Only trade if signal strength > threshold
+                #if abs(signal) < MIN_SIGNAL_STRENGTH:
+                 #   positions[commodity] = 0.0
+                  #  continue
+                
+                # Binary directional: just trade direction, fixed size
+                if STRATEGY_MODE == 'directional':
+                    direction = np.sign(signal)  # +1 or -1
+                    positions[commodity] = direction * FIXED_POSITION_SIZE
+                else:
+                    # Original magnitude-based (current broken approach)
+                    positions[commodity] = signal * (TARGET_PORTFOLIO_VOL / commodity_vols[commodity])
             
             # Apply risk management
             portfolio_returns = pd.Series([r.get('portfolio_return', 0) for r in results])
@@ -259,7 +268,7 @@ class BacktestEngine:
             # Update positions and compute PnL
             daily_pnl = 0.0
             position_changes = []
-
+            
             for commodity in self.commodities:
                 if commodity not in positions:
                     continue
@@ -271,30 +280,28 @@ class BacktestEngine:
                 old_position = self.positions[commodity]
                 new_position = positions[commodity]
                 
-                # PnL from existing position
-                # Position is a FRACTION of portfolio (e.g., 0.10 = 10% of capital)
+                # Calculate PnL from existing position
                 if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
-                    # Calculate return
                     price_return = (current_price - self.entry_prices[commodity]) / self.entry_prices[commodity]
-                    
-                    # PnL = (Portfolio Value - Today's PnL so far) × Position × Return
-                    # Use previous day's portfolio value for position sizing
                     portfolio_value_for_sizing = self.portfolio_value - daily_pnl
-                    
                     pnl = portfolio_value_for_sizing * old_position * price_return
                     daily_pnl += pnl
+                    
+                    # Debug log
+                    if idx % 50 == 0 and abs(pnl) > 0.01:
+                        logger.info(f"  {commodity}: pos={old_position:.3f}, return={price_return:.2%}, pnl=${pnl:.2f}")
                 
-                # Track position changes
-                if abs(new_position - old_position) > 0.01:
-                    position_changes.append(f"{commodity}: {old_position:.2f} -> {new_position:.2f}")
-                    self.entry_prices[commodity] = current_price
-                
+                # Update position
                 self.positions[commodity] = new_position
-                self.entry_prices[commodity] = current_price
+                
+                # Update entry price only when position changes
+                if abs(new_position - old_position) > 0.01:
+                    position_changes.append(f"{commodity}: {old_position:.2f} → {new_position:.2f}")
+                    self.entry_prices[commodity] = current_price
             
             # Log position changes
-            if position_changes and idx % 50 == 0:
-                logger.info(f"Position changes: {position_changes}")
+            if position_changes:
+                logger.info(f"Position changes: {', '.join(position_changes)}")
             
             # Update portfolio value
             self.portfolio_value += daily_pnl
@@ -312,12 +319,10 @@ class BacktestEngine:
             results.append(result)
         
         logger.info(f"Collected {len(results)} result records")
-        if len(results) > 0:
-            logger.info(f"Sample result keys: {list(results[0].keys())}")
-        else:
-            logger.warning("No results collected - check data and model training")
-
         return pd.DataFrame(results)
+
+
+
 
 
     def _generate_signal_for_date(self,

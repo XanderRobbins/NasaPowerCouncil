@@ -46,7 +46,7 @@ SIGNAL_EMA_SPAN = int(os.getenv('SIGNAL_EMA_SPAN', 3))
 
 # Backtest Settings
 BACKTEST_START_DATE = os.getenv('BACKTEST_START_DATE', '2020-01-01')
-BACKTEST_END_DATE = os.getenv('BACKTEST_END_DATE', '2023-12-31')
+BACKTEST_END_DATE = os.getenv('BACKTEST_END_DATE', '2025-01-01')
 
 # LLM Settings (for council)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -54,9 +54,18 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 USE_LLM_COUNCIL = os.getenv('USE_LLM_COUNCIL', 'false').lower() == 'true'
 
 # Phase 1 Commodities
-PHASE_1_COMMODITIES = ['corn', 'soybeans', 'wheat']
+PHASE_1_COMMODITIES = ['corn', 'soybeans']
 
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = DATA_STORAGE_PATH / 'logs' / 'climate_futures.log'
 LOG_FILE.parent.mkdir(exist_ok=True)
+
+
+# Strategy Mode
+STRATEGY_MODE = 'directional'  # 'directional' or 'magnitude'
+
+# Directional Strategy Settings
+MIN_SIGNAL_STRENGTH = 0.5  # Only trade signals > 0.5 std dev
+FIXED_POSITION_SIZE = 0.10  # 10% of portfolio per trade
+ONLY_TRADE_GROWING_SEASON = True  # April-September only
