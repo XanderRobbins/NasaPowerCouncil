@@ -27,42 +27,58 @@ class StressCalculator:
         self.commodity = commodity
         self.thresholds = CRITICAL_THRESHOLDS[commodity]
         
+
     def compute_heat_stress(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Heat stress: HS = max(0, Temp_max - T_critical_high)
         """
         df = df.copy()
+        
+        # Check if threshold exists (not all commodities have this)
+        if 'temp_critical_high' not in self.thresholds:
+            return df
+        
         t_crit = self.thresholds['temp_critical_high']
         df['heat_stress'] = np.maximum(0, df['temp_max'] - t_crit)
         
         # Also compute Z-score version
         if 'temp_max_z' in df.columns:
             df['heat_stress_z'] = np.maximum(0, df['temp_max_z'] - 
-                                             (t_crit - df['temp_max'].mean()) / df['temp_max'].std())
+                                            (t_crit - df['temp_max'].mean()) / df['temp_max'].std())
         
         return df
-    
+
+
     def compute_cold_stress(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Cold stress: CS = max(0, T_critical_low - Temp_min)
         """
         df = df.copy()
-        t_crit = self.thresholds.get('temp_critical_low')
         
-        if t_crit is not None:
-            df['cold_stress'] = np.maximum(0, t_crit - df['temp_min'])
-            
-            if 'temp_min_z' in df.columns:
-                df['cold_stress_z'] = np.maximum(0, 
-                    (t_crit - df['temp_min'].mean()) / df['temp_min'].std() - df['temp_min_z'])
+        # Check if threshold exists
+        if 'temp_critical_low' not in self.thresholds:
+            return df
+        
+        t_crit = self.thresholds['temp_critical_low']
+        df['cold_stress'] = np.maximum(0, t_crit - df['temp_min'])
+        
+        if 'temp_min_z' in df.columns:
+            df['cold_stress_z'] = np.maximum(0, 
+                (t_crit - df['temp_min'].mean()) / df['temp_min'].std() - df['temp_min_z'])
         
         return df
-    
+
+
     def compute_dry_stress(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Dry stress: DS = max(0, Precip_threshold - Precip)
         """
         df = df.copy()
+        
+        # Check if threshold exists
+        if 'precip_threshold_dry' not in self.thresholds:
+            return df
+        
         precip_threshold = self.thresholds['precip_threshold_dry']
         
         # Convert to weekly if needed (NASA POWER gives daily)
@@ -71,20 +87,27 @@ class StressCalculator:
             df['dry_stress'] = np.maximum(0, precip_threshold - df['precip_7d'])
         
         return df
-    
+
     def compute_wet_stress(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Wet stress (flooding): WS = max(0, Precip - Precip_threshold_wet)
         """
         df = df.copy()
-        precip_threshold = self.thresholds.get('precip_threshold_wet')
         
-        if precip_threshold is not None and 'precipitation' in df.columns:
+        # Check if threshold exists
+        if 'precip_threshold_wet' not in self.thresholds:
+            return df
+        
+        precip_threshold = self.thresholds['precip_threshold_wet']
+        
+        if 'precipitation' in df.columns:
             df['precip_7d'] = df['precipitation'].rolling(window=7).sum()
             df['wet_stress'] = np.maximum(0, df['precip_7d'] - precip_threshold)
         
         return df
-    
+
+
+
     def compute_gdd(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Growing Degree Days: GDD = max(0, (T_max + T_min)/2 - T_base)

@@ -30,13 +30,13 @@ class CacheManager:
         sorted_params = json.dumps(params, sort_keys=True)
         hash_key = hashlib.md5(sorted_params.encode()).hexdigest()
         return hash_key
-    
+        
     def _get_cache_path(self, cache_key: str, data_type: str = 'climate') -> Path:
         """Get cache file path."""
         cache_subdir = self.cache_dir / data_type
         cache_subdir.mkdir(exist_ok=True)
-        return cache_subdir / f"{cache_key}.parquet"
-    
+        return cache_subdir / f"{cache_key}.pkl"  # Changed from .parquet to .pkl
+
     def _is_cache_valid(self, cache_path: Path, ttl_days: Optional[int] = None) -> bool:
         """Check if cache is still valid (not expired)."""
         if not cache_path.exists():
@@ -68,7 +68,7 @@ class CacheManager:
         if self._is_cache_valid(cache_path, ttl_days):
             logger.debug(f"Cache HIT: {cache_key}")
             try:
-                df = pd.read_parquet(cache_path)
+                df = pd.read_pickle(cache_path)
                 return df
             except Exception as e:
                 logger.warning(f"Failed to read cache {cache_key}: {e}")
@@ -90,7 +90,7 @@ class CacheManager:
         cache_path = self._get_cache_path(cache_key, data_type)
         
         try:
-            data.to_parquet(cache_path)
+            data.to_pickle(cache_path)
             logger.debug(f"Cached data: {cache_key}")
         except Exception as e:
             logger.error(f"Failed to cache data {cache_key}: {e}")

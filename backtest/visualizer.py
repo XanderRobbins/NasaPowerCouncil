@@ -224,7 +224,7 @@ class BacktestVisualizer:
         # Month names
         month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        pivot.columns = month_names
+        pivot.columns = [month_names[int(m)-1] for m in pivot.columns]
         
         # Plot
         fig, ax = plt.subplots(figsize=(12, 8))

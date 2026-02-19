@@ -157,6 +157,9 @@ class BacktestEngine:
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
             
+            if idx == start_idx:
+                logger.info(f"Starting simulation at index {idx}, date {current_date}")
+            
             if idx % 50 == 0:
                 logger.info(f"Processing {current_date.date()} ({idx}/{len(sim_dates)})")
             
@@ -175,7 +178,11 @@ class BacktestEngine:
                     market_data[commodity]['date'] <= current_date
                 ]['close']
                 
-                if len(features_up_to_now) < min_history or len(prices_up_to_now) < min_history:
+                # Need at least 1 year of data to train
+                min_train = 252
+                if len(features_up_to_now) < min_train or len(prices_up_to_now) < min_train:
+                    if idx == start_idx:
+                        logger.warning(f"Skipping {commodity} on {current_date}: only {len(features_up_to_now)} days")
                     continue
                 
                 # Train model and generate signal (NO LOOK-AHEAD)
@@ -199,17 +206,19 @@ class BacktestEngine:
             # Run council for each commodity
             council_weights = {}
             for commodity, signal in commodity_signals.items():
-                council_context = {
-                    'raw_signal': signal,
-                    'commodity': commodity,
-                    'current_date': current_date,
-                    'features': features_data[commodity],
-                    'prices': market_data[commodity]['close'],
-                    'returns': market_data[commodity]['close'].pct_change()
-                }
+                council_weights[commodity] = signal
                 
-                council_result = self.council.evaluate(council_context)
-                council_weights[commodity] = council_result['final_weight']
+                #council_context = {
+                #   'raw_signal': signal,
+                #    'commodity': commodity,
+                #    'current_date': current_date,
+                #    'features': features_data[commodity],
+                #    'prices': market_data[commodity]['close'],
+                #    'returns': market_data[commodity]['close'].pct_change()
+                #}
+                
+                #council_result = self.council.evaluate(council_context)
+                #council_weights[commodity] = council_result['final_weight']
             
             # Construct portfolio
             positions = self.portfolio_constructor.compute_position_sizes(
@@ -272,7 +281,12 @@ class BacktestEngine:
                 **{f'{c}_position': positions.get(c, 0) for c in self.commodities}
             }
             results.append(result)
-        
+        logger.info(f"Collected {len(results)} result records")
+        if len(results) > 0:
+            logger.info(f"Sample result keys: {list(results[0].keys())}")
+        else:
+            logger.warning("No results collected - check data and model training")
+
         return pd.DataFrame(results)
     
     def _generate_signal_for_date(self,
@@ -309,7 +323,10 @@ class BacktestEngine:
             valid_idx = ~np.isnan(y_train)
             X_train = X_train[valid_idx]
             y_train = y_train[valid_idx]
-            
+                        
+            X_train = np.nan_to_num(X_train, nan=0.0)  # Replace NaN with 0
+            X_test = np.nan_to_num(X_test, nan=0.0) 
+
             if len(y_train) < 100:
                 return 0.0
             

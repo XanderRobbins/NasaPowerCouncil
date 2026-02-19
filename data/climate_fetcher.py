@@ -62,10 +62,14 @@ class NASAPowerFetcher:
             DataFrame with daily climate data
         """
         # Check cache first
-        cache_file = self.cache_dir / f"{region_name}_{start_date}_{end_date}.parquet"
+        # Check cache first
+        cache_file = self.cache_dir / f"{region_name}_{start_date}_{end_date}.pkl"
         if cache_file.exists():
             logger.info(f"Loading cached data for {region_name}")
-            return pd.read_parquet(cache_file)
+            return pd.read_pickle(cache_file)
+
+
+
         
         # Format dates
         start_date_fmt = pd.to_datetime(start_date).strftime('%Y%m%d')
@@ -93,9 +97,9 @@ class NASAPowerFetcher:
             df = self._parse_response(data, region_name)
             
             # Cache
-            df.to_parquet(cache_file)
+            # Cache
+            df.to_pickle(cache_file)
             logger.info(f"Cached data for {region_name} to {cache_file}")
-            
             # Rate limit: NASA POWER has limits
             time.sleep(1)
             
@@ -186,3 +190,20 @@ class NASAPowerFetcher:
             all_data[commodity] = self.fetch_commodity_regions(commodity, start_date, end_date)
         
         return all_data
+    
+
+
+def fetch_commodity_regions(commodity: str, start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
+        """
+        Convenience function to fetch climate data for all regions of a commodity.
+        
+        Args:
+            commodity: Commodity name
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            
+        Returns:
+            Dict mapping region names to DataFrames
+        """
+        fetcher = NASAPowerFetcher()
+        return fetcher.fetch_commodity_regions(commodity, start_date, end_date)

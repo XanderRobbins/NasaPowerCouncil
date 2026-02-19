@@ -103,8 +103,11 @@ def get_current_stage(commodity: str, region: str, date) -> str:
     if commodity not in GROWING_CALENDARS:
         return 'unknown'
     
-    calendar = GROWING_CALENDARS[commodity].get(hemisphere, 
-                                                 GROWING_CALENDARS[commodity].get(region.split('_')[1]))
+    # Try hemisphere first, then region directly
+    calendar = GROWING_CALENDARS[commodity].get(hemisphere)
+    if calendar is None:
+        # Try region name directly (for special cases like Brazil, Colombia, Vietnam)
+        calendar = GROWING_CALENDARS[commodity].get(region)
     
     if calendar is None:
         return 'unknown'
@@ -120,6 +123,7 @@ def get_current_stage(commodity: str, region: str, date) -> str:
             return stage
     
     return 'dormant'
+
 
 
 def get_sensitivity_weight(commodity: str, stage: str) -> float:

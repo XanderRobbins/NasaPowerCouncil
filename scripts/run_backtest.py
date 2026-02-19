@@ -32,6 +32,20 @@ def main():
     
     # Compute metrics
     logger.info("\nComputing performance metrics...")
+    if results.empty or 'portfolio_return' not in results.columns:
+        logger.error("Backtest returned no results or incomplete data")
+        logger.info(f"Results shape: {results.shape}")
+        logger.info(f"Results columns: {list(results.columns)}")
+        
+        # Save what we have
+        results_file = project_root / 'data_storage' / 'results' / 'backtest_results.pkl'
+        results_file.parent.mkdir(parents=True, exist_ok=True)
+        results.to_pickle(results_file)
+        logger.info(f"Saved incomplete results to {results_file}")
+        
+        import sys
+        sys.exit(1)
+
     metrics_calc = PerformanceMetrics(results)
     metrics_calc.print_summary()
     

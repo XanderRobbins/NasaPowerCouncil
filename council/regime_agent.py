@@ -4,7 +4,7 @@ Regime Agent: Detects macro regime changes that could invalidate weather signals
 import numpy as np
 import pandas as pd
 from typing import Dict, Any
-from scipy.stats import hmm
+
 
 from council.base_agent import BaseAgent
 

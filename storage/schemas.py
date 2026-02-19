@@ -5,6 +5,7 @@ from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Table, MetaData
 from datetime import datetime
+from loguru import logger 
 
 Base = declarative_base()
 
