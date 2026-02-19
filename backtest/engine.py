@@ -129,30 +129,24 @@ class BacktestEngine:
             features_data[commodity] = features
         
         return features_data
-    
+        
     def _walk_forward_simulation(self,
-                                 features_data: Dict[str, pd.DataFrame],
-                                 market_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+                                features_data: Dict[str, pd.DataFrame],
+                                market_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         """
         Walk-forward simulation (NO look-ahead).
-        
-        For each date:
-        1. Use only data available up to that date
-        2. Train models on historical data
-        3. Generate signals
-        4. Run council
-        5. Construct portfolio
-        6. Execute trades
-        7. Update PnL
         """
         results = []
         
-        # Determine simulation dates (use market data dates as reference)
+        # Determine simulation dates
         sim_dates = market_data[self.commodities[0]]['date']
         
-        # Start after sufficient history (e.g., 252 * 10 days for 10-year window)
+        # Start after sufficient history
         min_history = 252 * 10
         start_idx = min(min_history, len(sim_dates) - 252)
+        
+        # MAINTAIN SIGNAL HISTORY for smoothing
+        signal_history = {c: [] for c in self.commodities}
         
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
@@ -185,40 +179,43 @@ class BacktestEngine:
                         logger.warning(f"Skipping {commodity} on {current_date}: only {len(features_up_to_now)} days")
                     continue
                 
-                # Train model and generate signal (NO LOOK-AHEAD)
-                signal = self._generate_signal_for_date(
+                # Train model and generate RAW signal (NO LOOK-AHEAD)
+                raw_signal = self._generate_signal_for_date(
                     features_up_to_now,
                     prices_up_to_now,
                     commodity,
                     current_date
                 )
                 
+                # Add to history
+                signal_history[commodity].append(raw_signal)
+                
+                # Smooth using FULL history (this is the fix!)
+                if len(signal_history[commodity]) > 1:
+                    smoothed_signal = self.signal_smoother.smooth_ema(
+                        np.array(signal_history[commodity])
+                    )[-1]  # Get last value
+                else:
+                    smoothed_signal = raw_signal
+                
                 # Compute realized vol
                 returns = prices_up_to_now.pct_change()
                 vol = returns.iloc[-20:].std() * np.sqrt(252)
                 
-                commodity_signals[commodity] = signal
+                commodity_signals[commodity] = smoothed_signal
                 commodity_vols[commodity] = vol
+                
+                # Log signal changes
+                if idx % 50 == 0:
+                    logger.info(f"{commodity}: raw={raw_signal:.4f}, smoothed={smoothed_signal:.4f}")
             
             if not commodity_signals:
                 continue
             
-            # Run council for each commodity
+            # Run council (you have it commented out - enable for governance)
             council_weights = {}
             for commodity, signal in commodity_signals.items():
                 council_weights[commodity] = signal
-                
-                #council_context = {
-                #   'raw_signal': signal,
-                #    'commodity': commodity,
-                #    'current_date': current_date,
-                #    'features': features_data[commodity],
-                #    'prices': market_data[commodity]['close'],
-                #    'returns': market_data[commodity]['close'].pct_change()
-                #}
-                
-                #council_result = self.council.evaluate(council_context)
-                #council_weights[commodity] = council_result['final_weight']
             
             # Construct portfolio
             positions = self.portfolio_constructor.compute_position_sizes(
@@ -227,20 +224,24 @@ class BacktestEngine:
             )
             
             # Apply risk management
-            portfolio_returns = pd.Series([r['portfolio_return'] for r in results])
+            portfolio_returns = pd.Series([r.get('portfolio_return', 0) for r in results])
             if len(portfolio_returns) > 0:
+                current_prices = {c: market_data[c][market_data[c]['date'] == current_date]['close'].iloc[0] 
+                                for c in self.commodities if c in positions}
+                
                 positions = self.risk_manager.apply_risk_limits(
                     positions,
                     commodity_signals,
                     self.entry_prices,
-                    {c: market_data[c][market_data[c]['date'] == current_date]['close'].iloc[0] 
-                     for c in self.commodities},
+                    current_prices,
                     commodity_vols,
                     portfolio_returns
                 )
             
             # Update positions and compute PnL
             daily_pnl = 0.0
+            position_changes = []
+            
             for commodity in self.commodities:
                 if commodity not in positions:
                     continue
@@ -252,24 +253,26 @@ class BacktestEngine:
                 old_position = self.positions[commodity]
                 new_position = positions[commodity]
                 
-                # PnL from existing position
-                if abs(old_position) > 1e-6:
-                    entry_price = self.entry_prices[commodity]
-                    if old_position > 0:
-                        pnl = old_position * (current_price - entry_price)
-                    else:
-                        pnl = -old_position * (entry_price - current_price)
+                # PnL from PRICE CHANGE on existing position
+                if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
+                    price_change = current_price - self.entry_prices[commodity]
+                    pnl = old_position * price_change * 50  # Multiply by point value (adjust per commodity)
                     daily_pnl += pnl
                 
-                # Update position
-                if abs(new_position - old_position) > 1e-6:
+                # Track position changes
+                if abs(new_position - old_position) > 0.01:  # 1% threshold
+                    position_changes.append(f"{commodity}: {old_position:.2f} -> {new_position:.2f}")
                     self.entry_prices[commodity] = current_price
                 
                 self.positions[commodity] = new_position
             
+            # Log position changes
+            if position_changes and idx % 50 == 0:
+                logger.info(f"Position changes: {position_changes}")
+            
             # Update portfolio value
             self.portfolio_value += daily_pnl
-            portfolio_return = daily_pnl / self.portfolio_value if self.portfolio_value > 0 else 0
+            portfolio_return = daily_pnl / (self.portfolio_value - daily_pnl) if (self.portfolio_value - daily_pnl) > 0 else 0
             
             # Record results
             result = {
@@ -281,6 +284,7 @@ class BacktestEngine:
                 **{f'{c}_position': positions.get(c, 0) for c in self.commodities}
             }
             results.append(result)
+        
         logger.info(f"Collected {len(results)} result records")
         if len(results) > 0:
             logger.info(f"Sample result keys: {list(results[0].keys())}")
@@ -288,16 +292,20 @@ class BacktestEngine:
             logger.warning("No results collected - check data and model training")
 
         return pd.DataFrame(results)
-    
+
+
+
+
+
+
     def _generate_signal_for_date(self,
-                                  features: pd.DataFrame,
-                                  prices: pd.Series,
-                                  commodity: str,
-                                  current_date: pd.Timestamp) -> float:
+                                features: pd.DataFrame,
+                                prices: pd.Series,
+                                commodity: str,
+                                current_date: pd.Timestamp) -> float:
         """
-        Generate signal for a specific date using only data up to that date.
+        Generate RAW signal for a specific date (smoothing happens in simulation loop).
         """
-        # Use RollingRidgeModel (already implements walk-forward)
         model = RollingRidgeModel()
         
         # Prepare features
@@ -307,9 +315,7 @@ class BacktestEngine:
         # Compute target
         y = model.compute_target(prices).values
         
-        # Train and predict (only using data up to current date)
         try:
-            # Simple approach: train on last 10 years, predict next day
             train_window = min(252 * 10, len(X) - 1)
             
             if len(X) < train_window + 1:
@@ -323,9 +329,9 @@ class BacktestEngine:
             valid_idx = ~np.isnan(y_train)
             X_train = X_train[valid_idx]
             y_train = y_train[valid_idx]
-                        
-            X_train = np.nan_to_num(X_train, nan=0.0)  # Replace NaN with 0
-            X_test = np.nan_to_num(X_test, nan=0.0) 
+            
+            X_train = np.nan_to_num(X_train, nan=0.0)
+            X_test = np.nan_to_num(X_test, nan=0.0)
 
             if len(y_train) < 100:
                 return 0.0
@@ -339,22 +345,18 @@ class BacktestEngine:
             model.model.fit(X_train_scaled, y_train)
             prediction = model.model.predict(X_test_scaled)[0]
             
-            # Construct signal
+            # Construct signal (RAW, no smoothing here)
             signal = self.signal_constructor.construct_signal(
                 np.array([prediction]),
                 prices.iloc[-252:]
             )[0]
             
-            # Smooth
-            # (In production, maintain smoothing state across calls)
-            signal = self.signal_smoother.smooth_ema(np.array([signal]))[0]
-            
+            # DO NOT SMOOTH HERE - it happens in the main loop!
             return signal
         
         except Exception as e:
             logger.error(f"Error generating signal for {commodity}: {e}")
             return 0.0
-
 
 def run_backtest(start_date: str,
                 end_date: str,

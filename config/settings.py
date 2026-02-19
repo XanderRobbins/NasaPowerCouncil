@@ -45,8 +45,8 @@ SIGNAL_CAP = float(os.getenv('SIGNAL_CAP', 3.0))
 SIGNAL_EMA_SPAN = int(os.getenv('SIGNAL_EMA_SPAN', 3))
 
 # Backtest Settings
-BACKTEST_START_DATE = os.getenv('BACKTEST_START_DATE', '2015-01-01')
-BACKTEST_END_DATE = os.getenv('BACKTEST_END_DATE', '2024-12-31')
+BACKTEST_START_DATE = os.getenv('BACKTEST_START_DATE', '2020-01-01')
+BACKTEST_END_DATE = os.getenv('BACKTEST_END_DATE', '2023-12-31')
 
 # LLM Settings (for council)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')

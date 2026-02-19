@@ -26,7 +26,7 @@ class RollingRidgeModel:
     def __init__(self, 
                  train_window_days: int = 252 * TRAIN_WINDOW_YEARS,
                  forward_horizon: int = FORWARD_RETURN_DAYS,
-                 alpha: float = 1.0,
+                 alpha: float = 1,
                  max_features: int = MAX_FEATURES_PER_COMMODITY):
         self.train_window = train_window_days
         self.forward_horizon = forward_horizon
