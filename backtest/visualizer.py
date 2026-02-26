@@ -1,272 +1,231 @@
 """
-Visualization tools for backtest analysis.
+Backtest visualization with dark theme.
 """
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+from loguru import logger
 
-from config.settings import RESULTS_PATH
-
+# Set dark theme globally
+plt.style.use('dark_background')
+sns.set_palette("bright")
 
 class BacktestVisualizer:
     """
-    Visualize backtest results.
+    Create visualizations for backtest results.
+    Dark theme for easy viewing.
     """
     
-    def __init__(self, results: pd.DataFrame):
-        self.results = results
-        self.results['date'] = pd.to_datetime(self.results['date'])
+    def __init__(self, figsize: tuple = (14, 10)):
+        self.figsize = figsize
         
-        # Set style
-        sns.set_style('whitegrid')
-        plt.rcParams['figure.figsize'] = (14, 8)
-        
-    def plot_equity_curve(self, save_path: Optional[Path] = None):
+        # Custom color scheme (bright colors on dark background)
+        self.colors = {
+            'equity': '#00ff41',      # Bright green
+            'drawdown': '#ff073a',    # Bright red
+            'signal': '#00d9ff',      # Cyan
+            'position': '#ffb700',    # Orange
+            'benchmark': '#888888',   # Gray
+        }
+    
+    def plot_equity_curve(self, results: pd.DataFrame, ax: Optional[plt.Axes] = None):
         """Plot portfolio equity curve."""
-        fig, ax = plt.subplots(figsize=(14, 6))
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 4))
         
-        ax.plot(self.results['date'], 
-                self.results['portfolio_value'], 
-                linewidth=2, 
-                color='darkblue',
-                label='Portfolio Value')
+        ax.plot(results['date'], results['portfolio_value'], 
+               color=self.colors['equity'], linewidth=2, label='Portfolio Value')
         
-        # Add buy & hold benchmark (if available)
-        initial_value = self.results['portfolio_value'].iloc[0]
-        ax.axhline(y=initial_value, color='gray', linestyle='--', alpha=0.5, label='Initial Capital')
+        # Add starting value reference line
+        initial_value = results['portfolio_value'].iloc[0]
+        ax.axhline(initial_value, color=self.colors['benchmark'], 
+                  linestyle='--', alpha=0.5, label='Initial Capital')
         
-        ax.set_xlabel('Date', fontsize=12)
-        ax.set_ylabel('Portfolio Value ($)', fontsize=12)
-        ax.set_title('Portfolio Equity Curve', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Date', fontsize=12, color='white')
+        ax.set_ylabel('Portfolio Value ($)', fontsize=12, color='white')
+        ax.set_title('Equity Curve', fontsize=14, fontweight='bold', color='white')
         ax.legend(loc='upper left')
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.2)
+        ax.tick_params(colors='white')
         
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved equity curve to {save_path}")
-        
-        plt.show()
+        return ax
     
-    def plot_drawdown(self, save_path: Optional[Path] = None):
+    def plot_drawdown(self, results: pd.DataFrame, ax: Optional[plt.Axes] = None):
         """Plot drawdown chart."""
-        cumulative = (1 + self.results['portfolio_return']).cumprod()
-        running_max = cumulative.cummax()
-        drawdown = (cumulative / running_max - 1) * 100  # Convert to percentage
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 3))
         
-        fig, ax = plt.subplots(figsize=(14, 6))
+        # Compute drawdown
+        cumulative = results['portfolio_value']
+        running_max = cumulative.expanding().max()
+        drawdown = (cumulative - running_max) / running_max
         
-        ax.fill_between(self.results['date'], 
-                        drawdown, 
-                        0, 
-                        color='red', 
-                        alpha=0.3)
-        ax.plot(self.results['date'], 
-                drawdown, 
-                color='darkred', 
-                linewidth=1.5,
-                label='Drawdown')
+        ax.fill_between(results['date'], drawdown * 100, 0, 
+                       color=self.colors['drawdown'], alpha=0.6)
+        ax.plot(results['date'], drawdown * 100, 
+               color=self.colors['drawdown'], linewidth=1)
         
-        # Mark maximum drawdown
-        max_dd_idx = drawdown.idxmin()
-        max_dd_date = self.results['date'].iloc[max_dd_idx]
-        max_dd_value = drawdown.iloc[max_dd_idx]
+        ax.set_xlabel('Date', fontsize=12, color='white')
+        ax.set_ylabel('Drawdown (%)', fontsize=12, color='white')
+        ax.set_title('Underwater Plot (Drawdown)', fontsize=14, fontweight='bold', color='white')
+        ax.grid(True, alpha=0.2)
+        ax.tick_params(colors='white')
         
-        ax.scatter([max_dd_date], [max_dd_value], 
-                  color='darkred', s=100, zorder=5,
-                  label=f'Max DD: {max_dd_value:.2f}%')
-        
-        ax.set_xlabel('Date', fontsize=12)
-        ax.set_ylabel('Drawdown (%)', fontsize=12)
-        ax.set_title('Portfolio Drawdown', fontsize=14, fontweight='bold')
-        ax.legend(loc='lower left')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved drawdown chart to {save_path}")
-        
-        plt.show()
+        return ax
     
-    def plot_returns_distribution(self, save_path: Optional[Path] = None):
-        """Plot distribution of returns."""
-        returns_pct = self.results['portfolio_return'] * 100
+    def plot_returns_distribution(self, results: pd.DataFrame, ax: Optional[plt.Axes] = None):
+        """Plot distribution of daily returns."""
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 4))
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        returns = results['portfolio_return'].dropna()
         
         # Histogram
-        axes[0].hist(returns_pct, bins=50, color='steelblue', alpha=0.7, edgecolor='black')
-        axes[0].axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Return')
-        axes[0].set_xlabel('Daily Return (%)', fontsize=12)
-        axes[0].set_ylabel('Frequency', fontsize=12)
-        axes[0].set_title('Return Distribution', fontsize=14, fontweight='bold')
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
+        ax.hist(returns * 100, bins=50, color=self.colors['equity'], 
+               alpha=0.7, edgecolor='white')
         
-        # Q-Q plot
-        from scipy import stats
-        stats.probplot(returns_pct.dropna(), dist="norm", plot=axes[1])
-        axes[1].set_title('Q-Q Plot (Normal Distribution)', fontsize=14, fontweight='bold')
-        axes[1].grid(True, alpha=0.3)
+        # Add mean line
+        mean_return = returns.mean() * 100
+        ax.axvline(mean_return, color='yellow', linestyle='--', 
+                  linewidth=2, label=f'Mean: {mean_return:.3f}%')
         
-        plt.tight_layout()
+        ax.set_xlabel('Daily Return (%)', fontsize=12, color='white')
+        ax.set_ylabel('Frequency', fontsize=12, color='white')
+        ax.set_title('Returns Distribution', fontsize=14, fontweight='bold', color='white')
+        ax.legend()
+        ax.grid(True, alpha=0.2, axis='y')
+        ax.tick_params(colors='white')
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved returns distribution to {save_path}")
-        
-        plt.show()
+        return ax
     
-    def plot_rolling_metrics(self, window: int = 60, save_path: Optional[Path] = None):
-        """Plot rolling Sharpe and volatility."""
-        returns = self.results['portfolio_return']
+    def plot_signals(self, results: pd.DataFrame, commodities: list, 
+                    ax: Optional[plt.Axes] = None):
+        """Plot signals over time."""
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 3))
         
-        # Rolling metrics
-        rolling_sharpe = (returns.rolling(window).mean() / returns.rolling(window).std()) * np.sqrt(252)
-        rolling_vol = returns.rolling(window).std() * np.sqrt(252) * 100
-        
-        fig, axes = plt.subplots(2, 1, figsize=(14, 10))
-        
-        # Rolling Sharpe
-        axes[0].plot(self.results['date'], rolling_sharpe, color='green', linewidth=2)
-        axes[0].axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='Sharpe = 1.0')
-        axes[0].axhline(y=0, color='red', linestyle='--', alpha=0.5)
-        axes[0].set_ylabel(f'Rolling Sharpe ({window}d)', fontsize=12)
-        axes[0].set_title('Rolling Sharpe Ratio', fontsize=14, fontweight='bold')
-        axes[0].legend()
-        axes[0].grid(True, alpha=0.3)
-        
-        # Rolling Vol
-        axes[1].plot(self.results['date'], rolling_vol, color='orange', linewidth=2)
-        axes[1].set_xlabel('Date', fontsize=12)
-        axes[1].set_ylabel(f'Rolling Vol ({window}d, Ann. %)', fontsize=12)
-        axes[1].set_title('Rolling Volatility', fontsize=14, fontweight='bold')
-        axes[1].grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved rolling metrics to {save_path}")
-        
-        plt.show()
-    
-    def plot_signal_analysis(self, commodities: list, save_path: Optional[Path] = None):
-        """Plot signals and positions for each commodity."""
-        n_commodities = len(commodities)
-        fig, axes = plt.subplots(n_commodities, 1, figsize=(14, 4*n_commodities))
-        
-        if n_commodities == 1:
-            axes = [axes]
-        
-        for i, commodity in enumerate(commodities):
+        for commodity in commodities:
             signal_col = f'{commodity}_signal'
+            if signal_col in results.columns:
+                ax.plot(results['date'], results[signal_col], 
+                       label=commodity.capitalize(), alpha=0.8, linewidth=1.5)
+        
+        ax.axhline(0, color='white', linestyle='-', alpha=0.3)
+        ax.set_xlabel('Date', fontsize=12, color='white')
+        ax.set_ylabel('Signal Strength', fontsize=12, color='white')
+        ax.set_title('Trading Signals', fontsize=14, fontweight='bold', color='white')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.2)
+        ax.tick_params(colors='white')
+        
+        return ax
+    
+    def plot_positions(self, results: pd.DataFrame, commodities: list,
+                      ax: Optional[plt.Axes] = None):
+        """Plot position sizes over time."""
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 3))
+        
+        for commodity in commodities:
             position_col = f'{commodity}_position'
-            
-            if signal_col not in self.results.columns:
-                continue
-            
-            ax = axes[i]
-            ax2 = ax.twinx()
-            
-            # Plot signal
-            ax.plot(self.results['date'], 
-                   self.results[signal_col], 
-                   color='blue', 
-                   linewidth=1.5, 
-                   alpha=0.7,
-                   label='Signal')
-            ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-            
-            # Plot position
-            ax2.plot(self.results['date'], 
-                    self.results[position_col], 
-                    color='red', 
-                    linewidth=1.5, 
-                    alpha=0.7,
-                    label='Position')
-            
-            ax.set_ylabel('Signal', fontsize=10, color='blue')
-            ax2.set_ylabel('Position', fontsize=10, color='red')
-            ax.set_title(f'{commodity.upper()} - Signal vs Position', fontsize=12, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            
-            # Legends
-            ax.legend(loc='upper left')
-            ax2.legend(loc='upper right')
+            if position_col in results.columns:
+                ax.plot(results['date'], results[position_col], 
+                       label=commodity.capitalize(), alpha=0.8, linewidth=1.5)
         
-        plt.tight_layout()
+        ax.axhline(0, color='white', linestyle='-', alpha=0.3)
+        ax.set_xlabel('Date', fontsize=12, color='white')
+        ax.set_ylabel('Position Size (% of Portfolio)', fontsize=12, color='white')
+        ax.set_title('Portfolio Positions', fontsize=14, fontweight='bold', color='white')
+        ax.legend(loc='upper left')
+        ax.grid(True, alpha=0.2)
+        ax.tick_params(colors='white')
+        
+        return ax
+    
+    def plot_rolling_sharpe(self, results: pd.DataFrame, window: int = 60,
+                           ax: Optional[plt.Axes] = None):
+        """Plot rolling Sharpe ratio."""
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 3))
+        
+        returns = results['portfolio_return']
+        rolling_sharpe = returns.rolling(window=window).mean() / returns.rolling(window=window).std() * np.sqrt(252)
+        
+        ax.plot(results['date'], rolling_sharpe, 
+               color=self.colors['signal'], linewidth=2)
+        ax.axhline(0, color='white', linestyle='-', alpha=0.3)
+        ax.axhline(1, color='yellow', linestyle='--', alpha=0.5, label='Sharpe = 1')
+        
+        ax.set_xlabel('Date', fontsize=12, color='white')
+        ax.set_ylabel('Rolling Sharpe Ratio', fontsize=12, color='white')
+        ax.set_title(f'{window}-Day Rolling Sharpe Ratio', fontsize=14, fontweight='bold', color='white')
+        ax.legend()
+        ax.grid(True, alpha=0.2)
+        ax.tick_params(colors='white')
+        
+        return ax
+    
+    def create_full_report(self, results: pd.DataFrame, commodities: list,
+                          save_path: Optional[Path] = None):
+        """Create comprehensive backtest report with all plots."""
+        fig = plt.figure(figsize=self.figsize)
+        fig.patch.set_facecolor('#0a0a0a')  # Very dark background
+        
+        # Create grid
+        gs = fig.add_gridspec(6, 2, hspace=0.4, wspace=0.3)
+        
+        # Plot 1: Equity curve (top, spans both columns)
+        ax1 = fig.add_subplot(gs[0:2, :])
+        self.plot_equity_curve(results, ax=ax1)
+        
+        # Plot 2: Drawdown
+        ax2 = fig.add_subplot(gs[2, :])
+        self.plot_drawdown(results, ax=ax2)
+        
+        # Plot 3: Returns distribution
+        ax3 = fig.add_subplot(gs[3, 0])
+        self.plot_returns_distribution(results, ax=ax3)
+        
+        # Plot 4: Rolling Sharpe
+        ax4 = fig.add_subplot(gs[3, 1])
+        self.plot_rolling_sharpe(results, ax=ax4)
+        
+        # Plot 5: Signals
+        ax5 = fig.add_subplot(gs[4, :])
+        self.plot_signals(results, commodities, ax=ax5)
+        
+        # Plot 6: Positions
+        ax6 = fig.add_subplot(gs[5, :])
+        self.plot_positions(results, commodities, ax=ax6)
+        
+        # Overall title
+        fig.suptitle('Backtest Performance Report', 
+                    fontsize=16, fontweight='bold', color='white', y=0.995)
         
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved signal analysis to {save_path}")
+            plt.savefig(save_path, dpi=150, facecolor='#0a0a0a', 
+                       edgecolor='none', bbox_inches='tight')
+            logger.info(f"Saved backtest visualization to {save_path}")
         
-        plt.show()
-    
-    def plot_monthly_returns_heatmap(self, save_path: Optional[Path] = None):
-        """Plot monthly returns heatmap."""
-        # Compute monthly returns
-        self.results['year'] = self.results['date'].dt.year
-        self.results['month'] = self.results['date'].dt.month
-        
-        monthly_returns = self.results.groupby(['year', 'month'])['portfolio_return'].sum() * 100
-        monthly_returns = monthly_returns.reset_index()
-        
-        # Pivot for heatmap
-        pivot = monthly_returns.pivot(index='year', columns='month', values='portfolio_return')
-        
-        # Month names
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        pivot.columns = [month_names[int(m)-1] for m in pivot.columns]
-        
-        # Plot
-        fig, ax = plt.subplots(figsize=(12, 8))
-        sns.heatmap(pivot, 
-                   annot=True, 
-                   fmt='.1f', 
-                   cmap='RdYlGn', 
-                   center=0,
-                   cbar_kws={'label': 'Return (%)'},
-                   linewidths=0.5,
-                   ax=ax)
-        
-        ax.set_title('Monthly Returns Heatmap (%)', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Month', fontsize=12)
-        ax.set_ylabel('Year', fontsize=12)
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved monthly heatmap to {save_path}")
-        
-        plt.show()
-    
-    def generate_full_report(self, commodities: list):
-        """Generate all visualizations and save to results folder."""
-        report_dir = RESULTS_PATH / 'backtest_report'
-        report_dir.mkdir(exist_ok=True)
-        
-        print(f"\nGenerating full backtest report in {report_dir}...")
-        
-        self.plot_equity_curve(save_path=report_dir / 'equity_curve.png')
-        self.plot_drawdown(save_path=report_dir / 'drawdown.png')
-        self.plot_returns_distribution(save_path=report_dir / 'returns_distribution.png')
-        self.plot_rolling_metrics(save_path=report_dir / 'rolling_metrics.png')
-        self.plot_signal_analysis(commodities, save_path=report_dir / 'signal_analysis.png')
-        self.plot_monthly_returns_heatmap(save_path=report_dir / 'monthly_heatmap.png')
-        
-        print(f"\n✓ Full report generated in {report_dir}")
+        return fig
 
 
-def visualize_backtest(results: pd.DataFrame, commodities: list):
-    """Convenience function to generate all visualizations."""
-    visualizer = BacktestVisualizer(results)
-    visualizer.generate_full_report(commodities)
+def plot_backtest_results(results: pd.DataFrame, 
+                         commodities: list,
+                         save_path: Optional[str] = None):
+    """
+    Convenience function to create full backtest visualization.
+    
+    Args:
+        results: Backtest results DataFrame
+        commodities: List of commodities
+        save_path: Path to save figure
+    """
+    visualizer = BacktestVisualizer()
+    fig = visualizer.create_full_report(results, commodities, save_path)
+    plt.show()
+    
+    return fig

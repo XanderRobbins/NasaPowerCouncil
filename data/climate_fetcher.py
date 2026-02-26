@@ -6,12 +6,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 from loguru import logger
 
 from config.settings import NASA_POWER_BASE_URL, RAW_DATA_PATH
-
 
 class NASAPowerFetcher:
     """
@@ -41,35 +40,31 @@ class NASAPowerFetcher:
         self.base_url = base_url
         self.cache_dir = RAW_DATA_PATH / 'climate'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-    def fetch_region(self, 
-                     lat: float, 
-                     lon: float, 
-                     start_date: str, 
-                     end_date: str,
-                     region_name: str) -> pd.DataFrame:
+    
+    def fetch_region(self,
+                    lat: float,
+                    lon: float,
+                    start_date: str,
+                    end_date: str,
+                    region_name: str) -> pd.DataFrame:
         """
         Fetch climate data for a specific region and date range.
         
         Args:
             lat: Latitude
             lon: Longitude
-            start_date: Start date (YYYYMMDD)
-            end_date: End date (YYYYMMDD)
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
             region_name: Name for caching
             
         Returns:
             DataFrame with daily climate data
         """
         # Check cache first
-        # Check cache first
         cache_file = self.cache_dir / f"{region_name}_{start_date}_{end_date}.pkl"
         if cache_file.exists():
             logger.info(f"Loading cached data for {region_name}")
             return pd.read_pickle(cache_file)
-
-
-
         
         # Format dates
         start_date_fmt = pd.to_datetime(start_date).strftime('%Y%m%d')
@@ -97,14 +92,14 @@ class NASAPowerFetcher:
             df = self._parse_response(data, region_name)
             
             # Cache
-            # Cache
             df.to_pickle(cache_file)
-            logger.info(f"Cached data for {region_name} to {cache_file}")
+            logger.info(f"Cached data for {region_name}")
+            
             # Rate limit: NASA POWER has limits
             time.sleep(1)
             
             return df
-            
+        
         except requests.RequestException as e:
             logger.error(f"Failed to fetch data for {region_name}: {e}")
             raise
@@ -147,63 +142,44 @@ class NASAPowerFetcher:
         
         return df
     
-    def fetch_commodity_regions(self, 
-                                commodity: str, 
-                                start_date: str, 
-                                end_date: str) -> Dict[str, pd.DataFrame]:
+    def fetch_commodity_regions(self,
+                               commodity: str,
+                               start_date: str,
+                               end_date: str) -> Dict[str, pd.DataFrame]:
         """
         Fetch climate data for all regions of a commodity.
         
         Returns:
             Dict mapping region names to DataFrames
         """
-        from config.regions import COMMODITY_REGIONS
+        from config.regions import get_commodity_regions
         
-        regions = COMMODITY_REGIONS[commodity]
+        regions = get_commodity_regions(commodity)
         region_data = {}
         
         for region_name, region_info in regions.items():
             lat = region_info['lat']
             lon = region_info['lon']
             
-            df = self.fetch_region(lat, lon, start_date, end_date, 
-                                   f"{commodity}_{region_name}")
+            df = self.fetch_region(lat, lon, start_date, end_date,
+                                  f"{commodity}_{region_name}")
             region_data[region_name] = df
         
         logger.info(f"Fetched climate data for {len(region_data)} regions of {commodity}")
         return region_data
-    
-    def fetch_all_commodities(self, 
-                             commodities: List[str], 
-                             start_date: str, 
-                             end_date: str) -> Dict[str, Dict[str, pd.DataFrame]]:
-        """
-        Fetch climate data for multiple commodities.
-        
-        Returns:
-            Nested dict: {commodity: {region: DataFrame}}
-        """
-        all_data = {}
-        
-        for commodity in commodities:
-            logger.info(f"Fetching data for {commodity}")
-            all_data[commodity] = self.fetch_commodity_regions(commodity, start_date, end_date)
-        
-        return all_data
-    
 
 
 def fetch_commodity_regions(commodity: str, start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
-        """
-        Convenience function to fetch climate data for all regions of a commodity.
+    """
+    Convenience function to fetch climate data for all regions of a commodity.
+    
+    Args:
+        commodity: Commodity name
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
         
-        Args:
-            commodity: Commodity name
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            
-        Returns:
-            Dict mapping region names to DataFrames
-        """
-        fetcher = NASAPowerFetcher()
-        return fetcher.fetch_commodity_regions(commodity, start_date, end_date)
+    Returns:
+        Dict mapping region names to DataFrames
+    """
+    fetcher = NASAPowerFetcher()
+    return fetcher.fetch_commodity_regions(commodity, start_date, end_date)

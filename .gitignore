@@ -1,32 +1,32 @@
-# Data
-data_storage/
-*.parquet
-*.db
-*.csv
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
 venv/
+env/
 *.egg-info/
+dist/
+build/
 
-# IDEs
+# Data
+data_storage/
+*.csv
+*.pkl
+*.parquet
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Environment
 .env
 
-# Notebooks
-.ipynb_checkpoints/
-
 # Logs
-logs/
 *.log
 
-# Models
-models/*.pkl
+# Jupyter
+.ipynb_checkpoints/

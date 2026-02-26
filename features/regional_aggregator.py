@@ -1,145 +1,70 @@
 """
-Aggregate regional stress into commodity-level signals.
-Production-weighted aggregation.
+Aggregate regional features into commodity-level signals using production weights.
 """
 import pandas as pd
 import numpy as np
 from typing import Dict
 from loguru import logger
+from config.regions import get_commodity_regions
 
-from config.regions import COMMODITY_REGIONS
-
-
-class RegionalAggregator:
-    """
-    Aggregate stress metrics across regions using production weights.
-    
-    Signal_commodity,t = Σ_r (w_r × CStress_r,t)
-    """
-    
-    def __init__(self, commodity: str):
-        self.commodity = commodity
-        self.regions = COMMODITY_REGIONS[commodity]
-        self.weights = {region: info['weight'] for region, info in self.regions.items()}
-        
-        # Validate weights sum to 1
-        total_weight = sum(self.weights.values())
-        if abs(total_weight - 1.0) > 0.01:
-            logger.warning(f"Weights for {commodity} sum to {total_weight}, normalizing...")
-            self.weights = {k: v/total_weight for k, v in self.weights.items()}
-    
-    def aggregate_feature(self, 
-                         region_dfs: Dict[str, pd.DataFrame], 
-                         feature_col: str) -> pd.DataFrame:
-        """
-        Aggregate a single feature across regions.
-        
-        Args:
-            region_dfs: Dict mapping region names to DataFrames
-            feature_col: Feature column to aggregate
-            
-        Returns:
-            DataFrame with aggregated feature
-        """
-        # Ensure all regions have the same date range
-        all_dates = None
-        
-        for region, df in region_dfs.items():
-            if all_dates is None:
-                all_dates = pd.to_datetime(df['date'])
-            else:
-                # Ensure consistency
-                assert len(df) == len(all_dates), f"Region {region} has different length"
-        
-        # Create result DataFrame
-        result = pd.DataFrame({'date': all_dates})
-        
-        # Weighted sum
-        weighted_values = None
-        
-        for region, df in region_dfs.items():
-            weight = self.weights[region]
-            
-            if feature_col not in df.columns:
-                logger.warning(f"Feature {feature_col} not found in {region}, skipping...")
-                continue
-            
-            region_values = df[feature_col].values
-            
-            if weighted_values is None:
-                weighted_values = weight * region_values
-            else:
-                weighted_values += weight * region_values
-        
-        result[f'{feature_col}_agg'] = weighted_values
-        
-        return result
-    
-    def aggregate_all_features(self, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-        """
-        Aggregate all stress features across regions.
-        
-        Returns:
-            DataFrame with all aggregated features
-        """
-        # Get list of features from first region
-        first_region = list(region_dfs.values())[0]
-        
-        # Identify cumulative stress features (these are the ones we want to aggregate)
-        feature_cols = [col for col in first_region.columns 
-                       if ('stress' in col and ('_7d' in col or '_14d' in col or '_30d' in col)) 
-                       or ('gdd' in col and ('_7d' in col or '_14d' in col or '_30d' in col))]
-        
-        logger.info(f"Aggregating {len(feature_cols)} features for {self.commodity}")
-        
-        # Start with dates
-        result = pd.DataFrame({'date': pd.to_datetime(first_region['date'])})
-        
-        # Aggregate each feature
-        for feature in feature_cols:
-            feature_df = self.aggregate_feature(region_dfs, feature)
-            result[f'{feature}_agg'] = feature_df[f'{feature}_agg']
-        
-        # Add metadata
-        result['commodity'] = self.commodity
-        
-        return result
-    
-    def compute_regional_divergence(self, region_dfs: Dict[str, pd.DataFrame], feature_col: str) -> pd.DataFrame:
-        """
-        Compute standard deviation across regions (divergence signal).
-        High divergence = regional heterogeneity (less reliable signal).
-        """
-        result = pd.DataFrame({'date': pd.to_datetime(list(region_dfs.values())[0]['date'])})
-        
-        # Stack regional values
-        regional_values = []
-        for region, df in region_dfs.items():
-            if feature_col in df.columns:
-                regional_values.append(df[feature_col].values)
-        
-        if regional_values:
-            regional_values = np.array(regional_values)
-            result[f'{feature_col}_divergence'] = np.std(regional_values, axis=0)
-        
-        return result
-
-
-def aggregate_commodity_regions(commodity: str, 
+def aggregate_regional_features(commodity: str, 
                                 region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
-    Convenience function to aggregate all regions for a commodity.
+    Aggregate regional features into commodity-level using production weights.
+    
+    Weighted average: F_commodity = Σ(w_i * F_region_i)
     
     Args:
         commodity: Commodity name
-        region_dfs: Dict mapping region names to processed DataFrames
+        region_dfs: Dict mapping region names to processed feature DataFrames
         
     Returns:
-        Aggregated DataFrame with commodity-level signals
+        Aggregated DataFrame with commodity-level features
     """
-    aggregator = RegionalAggregator(commodity)
-    aggregated = aggregator.aggregate_all_features(region_dfs)
+    regions = get_commodity_regions(commodity)
     
-    logger.info(f"Aggregated {len(region_dfs)} regions for {commodity}")
+    # Get all dates (union of all regional dates)
+    all_dates = pd.concat([df[['date']] for df in region_dfs.values()]).drop_duplicates().sort_values('date')
+    
+    # Initialize aggregated DataFrame
+    aggregated = all_dates.copy()
+    
+    # Get stress feature columns (only aggregate stress indicators, not raw weather)
+    stress_cols = []
+    for df in region_dfs.values():
+        stress_cols.extend([col for col in df.columns 
+                          if ('stress' in col or 'gdd' in col) and col not in stress_cols])
+    
+    # Remove non-aggregatable columns
+    stress_cols = [col for col in stress_cols if col not in ['date', 'month', 'day', 'region']]
+    
+    logger.info(f"Aggregating {len(stress_cols)} stress features across {len(region_dfs)} regions")
+    
+    # Aggregate each feature
+    for col in stress_cols:
+        aggregated[f'{col}_agg'] = 0.0
+        
+        for region_name, df in region_dfs.items():
+            if col not in df.columns:
+                continue
+            
+            weight = regions[region_name]['weight']
+            
+            # Merge regional data
+            regional_data = df[['date', col]].rename(columns={col: f'{col}_temp'})
+            aggregated = aggregated.merge(regional_data, on='date', how='left')
+            
+            # Add weighted contribution
+            aggregated[f'{col}_agg'] += aggregated[f'{col}_temp'].fillna(0) * weight
+            
+            # Clean up temp column
+            aggregated = aggregated.drop(columns=[f'{col}_temp'])
+    
+    # Forward fill missing values (FIXED for pandas 2.0+)
+    for col in aggregated.columns:
+        if col != 'date':
+            aggregated[col] = aggregated[col].ffill().fillna(0)  # Changed from fillna(method='ffill')
+    
+    logger.info(f"Aggregated features shape: {aggregated.shape}")
     
     return aggregated

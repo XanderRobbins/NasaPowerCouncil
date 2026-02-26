@@ -1,77 +1,65 @@
 """
-Rolling Ridge regression model for predicting forward returns.
+Directional classifier for predicting price movement direction.
 """
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report
 from typing import Tuple, List
 from loguru import logger
 
-from config.settings import TRAIN_WINDOW_YEARS, FORWARD_RETURN_DAYS, MAX_FEATURES
+from config.settings import FORWARD_RETURN_DAYS, MAX_FEATURES
 
-class RollingRidgeModel:
+class DirectionalClassifier:
     """
-    Ridge regression with rolling training windows.
+    Logistic regression classifier for predicting direction (up/down).
     
-    Features:
-    - No look-ahead bias (strict temporal split)
-    - Feature selection via variance filtering
-    - L2 regularization to prevent overfitting
+    This optimizes directly for what matters in trading: getting the direction right.
+    Unlike Ridge which minimizes squared error, this maximizes directional accuracy.
     """
     
     def __init__(self,
-                 train_window_days: int = 252 * TRAIN_WINDOW_YEARS,
                  forward_horizon: int = FORWARD_RETURN_DAYS,
-                 alpha: float = 1.0,
+                 C: float = 1.0,
                  max_features: int = MAX_FEATURES):
-        self.train_window = train_window_days
         self.forward_horizon = forward_horizon
-        self.alpha = alpha
+        self.C = C  # Inverse of regularization strength
         self.max_features = max_features
-        self.model = Ridge(alpha=alpha)
+        self.model = LogisticRegression(C=C, max_iter=1000, random_state=42)
         self.scaler = StandardScaler()
         self.feature_names = None
     
     def prepare_features(self, df: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
-        """
-        Select and prepare features for modeling.
-        
-        Returns:
-            Feature matrix, feature names
-        """
-        # Select cumulative stress features (7d, 14d, 30d aggregates)
+        """Select and prepare features."""
+        # Select cumulative stress features
         feature_cols = [col for col in df.columns
                        if '_agg' in col and any(x in col for x in ['_7d', '_14d', '_30d'])]
         
         if len(feature_cols) == 0:
-            logger.warning("No stress features found, using all numeric columns")
             feature_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             feature_cols = [col for col in feature_cols if col not in ['date', 'month', 'day']]
         
-        # Limit to max features (select by variance)
+        # Limit features
         if len(feature_cols) > self.max_features:
-            logger.warning(f"Too many features ({len(feature_cols)}), selecting top {self.max_features}")
             variances = df[feature_cols].var().sort_values(ascending=False)
             feature_cols = variances.head(self.max_features).index.tolist()
         
         X = df[feature_cols].values
         
-        logger.info(f"Selected {len(feature_cols)} features for model")
-        
         return X, feature_cols
     
     def compute_target(self, prices: pd.Series) -> pd.Series:
         """
-        Compute forward returns.
-        
-        Y_t = (Price_{t+h} - Price_t) / Price_t
+        Compute binary target: 1 if price goes up, 0 if down.
         """
         forward_returns = prices.pct_change(self.forward_horizon).shift(-self.forward_horizon)
-        return forward_returns
+        # Convert to binary: 1 = up, 0 = down
+        direction = (forward_returns > 0).astype(int)
+        return direction
     
     def fit(self, X: np.ndarray, y: np.ndarray):
-        """Train the model on provided data."""
+        """Train the classifier."""
         # Remove NaNs
         valid_idx = ~np.isnan(y)
         X_train = X[valid_idx]
@@ -86,21 +74,30 @@ class RollingRidgeModel:
         # Train
         self.model.fit(X_train_scaled, y_train)
         
-        logger.info(f"Model trained on {len(y_train)} samples")
+        # Log class distribution
+        unique, counts = np.unique(y_train, return_counts=True)
+        class_dist = dict(zip(unique, counts))
+        logger.info(f"Training class distribution: {class_dist}")
+        logger.info(f"Classifier trained on {len(y_train)} samples")
     
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions."""
+        """Predict direction (0 or 1)."""
         X_scaled = self.scaler.transform(X)
         return self.model.predict(X_scaled)
     
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Predict probability of upward move."""
+        X_scaled = self.scaler.transform(X)
+        return self.model.predict_proba(X_scaled)[:, 1]
+    
     def get_feature_importance(self) -> pd.DataFrame:
-        """Get feature coefficients (importance)."""
+        """Get feature coefficients."""
         if self.feature_names is None:
             return pd.DataFrame()
         
         importance = pd.DataFrame({
             'feature': self.feature_names,
-            'coefficient': self.model.coef_
+            'coefficient': self.model.coef_[0]
         })
         importance['abs_coefficient'] = importance['coefficient'].abs()
         importance = importance.sort_values('abs_coefficient', ascending=False)
@@ -108,26 +105,26 @@ class RollingRidgeModel:
         return importance
 
 
-def train_ridge_model(features_df: pd.DataFrame,
-                     prices: pd.Series,
-                     commodity: str) -> Tuple[RollingRidgeModel, float]:
+def train_classifier(features_df: pd.DataFrame,
+                    prices: pd.Series,
+                    commodity: str) -> Tuple[DirectionalClassifier, float]:
     """
-    Train a Ridge model for a commodity.
+    Train a directional classifier.
     
     Returns:
-        Trained model, R² score
+        Trained classifier, accuracy score
     """
-    logger.info(f"Training Ridge model for {commodity}")
+    logger.info(f"Training directional classifier for {commodity}")
     
-    # Initialize model
-    model = RollingRidgeModel()
+    # Initialize
+    clf = DirectionalClassifier()
     
     # Prepare features
-    X, feature_names = model.prepare_features(features_df)
-    model.feature_names = feature_names
+    X, feature_names = clf.prepare_features(features_df)
+    clf.feature_names = feature_names
     
     # Compute target
-    y = model.compute_target(prices).values
+    y = clf.compute_target(prices).values
     
     # Align lengths
     min_len = min(len(X), len(y))
@@ -135,16 +132,20 @@ def train_ridge_model(features_df: pd.DataFrame,
     y = y[:min_len]
     
     # Train
-    model.fit(X, y)
+    clf.fit(X, y)
     
-    # Evaluate on training data
+    # Evaluate
     valid_idx = ~np.isnan(y)
     X_valid = X[valid_idx]
     y_valid = y[valid_idx]
     
-    predictions = model.predict(X_valid)
-    r2 = np.corrcoef(predictions, y_valid)[0, 1] ** 2
+    predictions = clf.predict(X_valid)
+    accuracy = accuracy_score(y_valid, predictions)
     
-    logger.info(f"Model R²: {r2:.4f}")
+    logger.info(f"Classifier accuracy: {accuracy:.2%}")
     
-    return model, r2
+    # Print classification report
+    logger.info("\n" + classification_report(y_valid, predictions, 
+                                            target_names=['Down', 'Up']))
+    
+    return clf, accuracy

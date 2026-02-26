@@ -1,133 +1,60 @@
 """
-Compute seasonal deviations (Z-scores) for weather variables.
-This normalizes raw weather data relative to historical baselines.
+Compute seasonal deviations (Z-scores) from historical baseline.
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, List
 from loguru import logger
 
-from config.settings import BASELINE_YEARS
-
-
-class SeasonalDeviationCalculator:
+def compute_seasonal_deviations(df: pd.DataFrame, 
+                               baseline_years: int = 20) -> pd.DataFrame:
     """
-    Compute Z-scores for weather variables relative to day-of-year baselines.
+    Compute Z-scores for weather variables relative to seasonal baseline.
     
-    Z_{r,t} = (X_{r,t} - μ_{r,doy}) / σ_{r,doy}
+    Z-score = (X_t - μ_season) / σ_season
     
-    Uses rolling N-year baseline to avoid look-ahead bias.
+    This captures "how unusual is today's weather relative to normal for this time of year?"
+    
+    Args:
+        df: DataFrame with date, temp_max, temp_min, precipitation, etc.
+        baseline_years: Number of years for baseline calculation
+        
+    Returns:
+        DataFrame with additional Z-score columns
     """
+    df = df.copy()
     
-    def __init__(self, baseline_years: int = BASELINE_YEARS):
-        self.baseline_years = baseline_years
-        self.baselines = {}  # Cache baselines
-        
-    def compute_baseline(self, df: pd.DataFrame, variable: str) -> pd.DataFrame:
-        """
-        Compute mean and std for each day-of-year from historical data.
-        
-        Args:
-            df: DataFrame with 'date' and weather variables
-            variable: Variable name (e.g., 'temp_max')
-            
-        Returns:
-            DataFrame with doy, mean, std
-        """
-        df = df.copy()
-        df['doy'] = pd.to_datetime(df['date']).dt.dayofyear
-        
-        # Group by day-of-year and compute statistics
-        baseline = df.groupby('doy')[variable].agg(['mean', 'std']).reset_index()
-        baseline.columns = ['doy', f'{variable}_mu', f'{variable}_sigma']
-        
-        # Handle zero std (rare, but possible)
-        baseline[f'{variable}_sigma'] = baseline[f'{variable}_sigma'].replace(0, 1e-6)
-        
-        return baseline
+    # Ensure date is datetime
+    df['date'] = pd.to_datetime(df['date'])
     
-    def compute_deviation(self, 
-                         df: pd.DataFrame, 
-                         variable: str,
-                         rolling: bool = True) -> pd.DataFrame:
-        """
-        Compute Z-score deviations.
-        
-        Args:
-            df: DataFrame with 'date' and weather variables
-            variable: Variable name
-            rolling: If True, use rolling baseline (no look-ahead)
-            
-        Returns:
-            DataFrame with Z-score column added
-        """
-        df = df.copy()
-        df['doy'] = pd.to_datetime(df['date']).dt.dayofyear
-        df['year'] = pd.to_datetime(df['date']).dt.year
-        
-        if rolling:
-            # Rolling baseline: for each date, use only prior years
-            z_scores = []
-            
-            for idx, row in df.iterrows():
-                current_year = row['year']
-                current_doy = row['doy']
-                
-                # Get historical data for this DOY (excluding current year)
-                historical = df[
-                    (df['doy'] == current_doy) & 
-                    (df['year'] < current_year) &
-                    (df['year'] >= current_year - self.baseline_years)
-                ]
-                
-                if len(historical) == 0:
-                    # Not enough history
-                    z_scores.append(np.nan)
-                    continue
-                
-                mu = historical[variable].mean()
-                sigma = historical[variable].std()
-                
-                if sigma == 0 or pd.isna(sigma):
-                    sigma = 1e-6
-                
-                z = (row[variable] - mu) / sigma
-                z_scores.append(z)
-            
-            df[f'{variable}_z'] = z_scores
-        
-        else:
-            # Static baseline: use all data (ONLY for backtesting with held-out test set)
-            baseline = self.compute_baseline(df, variable)
-            df = df.merge(baseline, on='doy', how='left')
-            df[f'{variable}_z'] = (df[variable] - df[f'{variable}_mu']) / df[f'{variable}_sigma']
-        
-        return df
+    # Extract month and day for seasonal grouping
+    df['month'] = df['date'].dt.month
+    df['day'] = df['date'].dt.day
+    df['month_day'] = df['month'].astype(str) + '-' + df['day'].astype(str)
     
-    def compute_all_deviations(self, 
-                              df: pd.DataFrame, 
-                              variables: List[str]) -> pd.DataFrame:
-        """Compute Z-scores for multiple variables."""
-        for var in variables:
-            if var in df.columns:
-                df = self.compute_deviation(df, var, rolling=True)
-                logger.debug(f"Computed Z-score for {var}")
+    # Variables to compute Z-scores for
+    variables = ['temp_avg', 'temp_max', 'temp_min', 'precipitation']
+    
+    for var in variables:
+        if var not in df.columns:
+            logger.warning(f"Variable {var} not found in DataFrame, skipping")
+            continue
         
-        return df
-
-
-def compute_seasonal_deviations_for_region(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convenience function to compute all standard deviations for a region.
-    """
-    calculator = SeasonalDeviationCalculator()
+        # Compute seasonal baseline (mean and std for each day-of-year)
+        seasonal_baseline = df.groupby('month_day')[var].agg(['mean', 'std']).reset_index()
+        seasonal_baseline.columns = ['month_day', f'{var}_seasonal_mean', f'{var}_seasonal_std']
+        
+        # Merge back
+        df = df.merge(seasonal_baseline, on='month_day', how='left')
+        
+        # Compute Z-score
+        df[f'{var}_z'] = (df[var] - df[f'{var}_seasonal_mean']) / (df[f'{var}_seasonal_std'] + 1e-6)
+        
+        # Clean up intermediate columns
+        df = df.drop(columns=[f'{var}_seasonal_mean', f'{var}_seasonal_std'])
     
-    variables = [
-        'temp_avg', 'temp_max', 'temp_min',
-        'precipitation', 'solar_radiation',
-        'wind_speed', 'relative_humidity'
-    ]
+    # Clean up
+    df = df.drop(columns=['month_day'])
     
-    df = calculator.compute_all_deviations(df, variables)
+    logger.debug(f"Computed seasonal deviations for {len(variables)} variables")
     
     return df

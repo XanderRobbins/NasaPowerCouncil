@@ -1,22 +1,8 @@
-"""
-Predictive models module.
-"""
-
+"""Machine learning models module."""
 from models.ridge_model import RollingRidgeModel, train_ridge_model
-from models.kalman_beta import (
-    DynamicBetaEstimator,
-    MultiVariateKalmanBeta,
-    estimate_dynamic_betas,
-)
-from models.model_trainer import ModelTrainer
-from models.model_validator import ModelValidator
+from models.classifier_model import DirectionalClassifier, train_classifier
 
 __all__ = [
-    'RollingRidgeModel',
-    'DynamicBetaEstimator',
-    'MultiVariateKalmanBeta',
-    'ModelTrainer',
-    'ModelValidator',
-    'train_ridge_model',
-    'estimate_dynamic_betas',
+    'RollingRidgeModel', 'train_ridge_model',
+    'DirectionalClassifier', 'train_classifier',
 ]

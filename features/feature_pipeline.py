@@ -2,24 +2,21 @@
 Orchestrate the full feature engineering pipeline.
 """
 import pandas as pd
-from typing import Dict, List
+from typing import Dict
 from loguru import logger
 
-from features.seasonal_deviation import compute_seasonal_deviations_for_region
-from features.stress_calculator import compute_stress_for_region
-from features.cumulative_stress import compute_cumulative_stress_for_region
-from features.regional_aggregator import aggregate_commodity_regions
-
+from features.seasonal_deviation import compute_seasonal_deviations
+from features.stress_calculator import compute_stress_indicators
+from features.regional_aggregator import aggregate_regional_features
 
 class FeaturePipeline:
     """
     Full feature engineering pipeline from raw climate data to aggregated signals.
     
     Steps:
-    1. Seasonal deviation (Z-scores)
-    2. Stress calculations (heat, dry, etc.)
-    3. Cumulative stress (rolling windows)
-    4. Regional aggregation (production-weighted)
+    1. Seasonal deviation (Z-scores relative to historical baseline)
+    2. Stress calculations (heat, cold, dry)
+    3. Regional aggregation (production-weighted)
     """
     
     def __init__(self, commodity: str):
@@ -38,14 +35,11 @@ class FeaturePipeline:
         """
         logger.info(f"Processing features for {self.commodity} - {region}")
         
-        # Step 1: Seasonal deviations
-        df = compute_seasonal_deviations_for_region(df)
+        # Step 1: Seasonal deviations (Z-scores)
+        df = compute_seasonal_deviations(df)
         
         # Step 2: Stress calculations
-        df = compute_stress_for_region(df, self.commodity, region)
-        
-        # Step 3: Cumulative stress
-        df = compute_cumulative_stress_for_region(df)
+        df = compute_stress_indicators(df, self.commodity)
         
         logger.debug(f"Generated {len(df.columns)} features for {region}")
         
@@ -80,7 +74,7 @@ class FeaturePipeline:
         """
         logger.info(f"Aggregating regions for {self.commodity}")
         
-        aggregated = aggregate_commodity_regions(self.commodity, processed_dfs)
+        aggregated = aggregate_regional_features(self.commodity, processed_dfs)
         
         return aggregated
     
@@ -107,8 +101,7 @@ class FeaturePipeline:
         return aggregated
 
 
-def run_feature_pipeline_for_commodity(commodity: str, 
-                                       region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+def run_feature_pipeline(commodity: str, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Convenience function to run the full feature pipeline for a commodity.
     """
