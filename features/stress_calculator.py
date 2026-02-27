@@ -68,3 +68,4 @@ def compute_stress_indicators(df: pd.DataFrame, commodity: str) -> pd.DataFrame:
     logger.debug(f"Computed stress indicators for {commodity}")
     
     return df
+

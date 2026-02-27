@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List
 from datetime import datetime
 from loguru import logger
+from sklearn.preprocessing import StandardScaler          # ADD THIS
 
 from data.climate_fetcher import NASAPowerFetcher
 from data.market_fetcher import MarketDataFetcher
@@ -146,7 +147,6 @@ class BacktestEngine:
         sim_dates = market_data[self.commodities[0]]['date']
         
         # Start after sufficient history (10 years)
-        from config.settings import TRAIN_WINDOW_YEARS
         min_history = 252 * TRAIN_WINDOW_YEARS
         start_idx = min(min_history, len(sim_dates) - 252)
         
@@ -302,75 +302,87 @@ class BacktestEngine:
         cache_key = f"{commodity}_{current_date.year}_{current_date.month}"
         
         # Check if model exists in cache
+
+
         if cache_key in self.model_cache:
-            model, scaler = self.model_cache[cache_key]
+            model, scaler, selected_features = self.model_cache[cache_key]  # unpack 3 items
             
-            # Just predict using cached model
-            X, _ = model.prepare_features(features)
+            # Use EXACT same features the scaler was trained on
+            X = features[selected_features].fillna(0).values
             if len(X) == 0:
                 return 0.0
             
             X_test = X[-1:]
             X_test_scaled = scaler.transform(X_test)
             prediction = model.model.predict(X_test_scaled)[0]
-        
+
         else:
-            # Train new model (first time seeing this month)
             model = RollingRidgeModel()
             
-            # Prepare features
-            X, feature_names = model.prepare_features(features)
+            y = model.compute_target(prices).values
+            y_series = pd.Series(y, index=range(len(y)))
+            
+            X, feature_names = model.prepare_features(features, target=y_series)
             model.feature_names = feature_names
             
-            # Compute target (forward returns)
-            y = model.compute_target(prices).values
-            
-            # Align lengths
             min_len = min(len(X), len(y))
             X = X[:min_len]
             y = y[:min_len]
             
-            # Train/test split (last 10 years train, predict next point)
-            from config.settings import TRAIN_WINDOW_YEARS
             train_window = min(252 * TRAIN_WINDOW_YEARS, len(X) - 1)
             if len(X) < train_window + 1:
                 return 0.0
             
             X_train = X[-train_window-1:-1]
             y_train = y[-train_window-1:-1]
-            X_test = X[-1:]
+            X_test  = X[-1:]
             
-            # Clean NaNs
             valid_idx = ~np.isnan(y_train)
             X_train = X_train[valid_idx]
             y_train = y_train[valid_idx]
             
-            if len(y_train) < 252:  # Need at least 1 year
+            if len(y_train) < 252:
                 return 0.0
             
-            # Scale
-            from sklearn.preprocessing import StandardScaler
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
-            X_test_scaled = scaler.transform(X_test)
+            X_test_scaled  = scaler.transform(X_test)
             
-            # Train
             model.model.fit(X_train_scaled, y_train)
             
-            # Cache for future use this month
-            self.model_cache[cache_key] = (model, scaler)
+            # Cache model, scaler, AND the feature names together
+            self.model_cache[cache_key] = (model, scaler, feature_names)  # store 3 items
             
-            # Predict
             prediction = model.model.predict(X_test_scaled)[0]
+
+
         
         # Standardize by realized vol
+        # In _generate_signal_for_date, replace the signal calculation:
         returns = prices.pct_change().dropna()
         vol = returns.iloc[-20:].std() * np.sqrt(252)
-        
-        # Signal = prediction / vol, capped at ±3
-        signal = prediction / (vol + 1e-8)
+
+        # NEW: normalize prediction by its own rolling scale
+        # Store recent predictions to build history
+        if not hasattr(self, 'prediction_history'):
+            self.prediction_history = {}
+
+        hist_key = f"{commodity}_preds"
+        if hist_key not in self.prediction_history:
+            self.prediction_history[hist_key] = []
+
+        self.prediction_history[hist_key].append(prediction)
+        pred_history = self.prediction_history[hist_key][-60:]  # Last 60 months
+
+        if len(pred_history) >= 5:
+            pred_std = np.std(pred_history) + 1e-8
+            pred_mean = np.mean(pred_history)
+            signal = (prediction - pred_mean) / pred_std  # Z-score of prediction
+        else:
+            signal = prediction / (vol + 1e-8)  # Fallback for early periods
+
         signal = np.clip(signal, -3.0, 3.0)
-        
+
         return signal
 
 

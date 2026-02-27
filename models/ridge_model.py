@@ -32,35 +32,35 @@ class RollingRidgeModel:
         self.model = Ridge(alpha=alpha)
         self.scaler = StandardScaler()
         self.feature_names = None
-    
-    def prepare_features(self, df: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
-        """
-        Select and prepare features for modeling.
         
-        Returns:
-            Feature matrix, feature names
-        """
-        # Select cumulative stress features (7d, 14d, 30d aggregates)
+    def prepare_features(self, df: pd.DataFrame, 
+                        target: pd.Series = None) -> Tuple[np.ndarray, List[str]]:
+        
         feature_cols = [col for col in df.columns
-                       if '_agg' in col and any(x in col for x in ['_7d', '_14d', '_30d'])]
+                        if '_agg' in col and any(x in col for x in ['_7d', '_14d', '_30d'])]
         
         if len(feature_cols) == 0:
-            logger.warning("No stress features found, using all numeric columns")
             feature_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            feature_cols = [col for col in feature_cols if col not in ['date', 'month', 'day']]
+            feature_cols = [col for col in feature_cols 
+                        if col not in ['date', 'month', 'day']]
         
-        # Limit to max features (select by variance)
-        if len(feature_cols) > self.max_features:
-            logger.warning(f"Too many features ({len(feature_cols)}), selecting top {self.max_features}")
-            variances = df[feature_cols].var().sort_values(ascending=False)
-            feature_cols = variances.head(self.max_features).index.tolist()
+        # Select by correlation to target instead of variance
+        if target is not None and len(feature_cols) > self.max_features:
+            min_len = min(len(df), len(target))
+            feature_df = df[feature_cols].iloc[:min_len]
+            target_aligned = target.iloc[:min_len]
+            
+            correlations = feature_df.corrwith(target_aligned).abs()
+            correlations = correlations.dropna()
+            feature_cols = correlations.nlargest(self.max_features).index.tolist()
+            logger.info(f"Top feature correlations: {correlations.nlargest(5).to_dict()}")
         
-        X = df[feature_cols].values
-        
-        logger.info(f"Selected {len(feature_cols)} features for model")
-        
+        X = df[feature_cols].fillna(0).values
         return X, feature_cols
-    
+
+
+
+
     def compute_target(self, prices: pd.Series) -> pd.Series:
         """
         Compute forward returns.
