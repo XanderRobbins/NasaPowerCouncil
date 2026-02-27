@@ -13,6 +13,8 @@ from data.market_fetcher import MarketDataFetcher
 from features.feature_pipeline import FeaturePipeline
 from models.ridge_model import RollingRidgeModel
 from config.settings import (
+    GROWING_SEASON_MONTHS,
+    ONLY_TRADE_GROWING_SEASON,
     STRATEGY_MODE, 
     FIXED_POSITION_SIZE, 
     TARGET_PORTFOLIO_VOL,
@@ -151,10 +153,23 @@ class BacktestEngine:
         logger.info(f"Starting simulation at index {start_idx} / {len(sim_dates)}")
         
         # Track entry notional values (FIXED)
-        #entry_notional = {c: 0.0 for c in self.commodities}
         
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
+
+            #testing growth Filter
+
+            if ONLY_TRADE_GROWING_SEASON and current_date.month not in GROWING_SEASON_MONTHS:
+                # Only trade during growing season (e.g., April to September)
+                results.append({
+                    'date': current_date,
+                    'portfolio_value': self.portfolio_value,
+                    'daily_pnl': 0.0,
+                    'portfolio_return': 0.0,
+                    **{f'{c}_signal': 0.0 for c in self.commodities},
+                    **{f'{c}_position': self.positions.get(c, 0) for c in self.commodities}
+                })
+                continue
             
             # Log progress every 100 days
             if idx % 100 == 0:
