@@ -246,7 +246,7 @@ class BacktestEngine:
                     
                     # Use the INITIAL CAPITAL as base (prevents compounding bug)
                     # This gives you simple returns, not geometric
-                    pnl = self.initial_capital * old_position * price_return
+                    pnl = self.portfolio_value * old_position * price_return
                     daily_pnl += pnl
                 
                 # Update position
