@@ -151,7 +151,7 @@ class BacktestEngine:
         logger.info(f"Starting simulation at index {start_idx} / {len(sim_dates)}")
         
         # Track entry notional values (FIXED)
-        entry_notional = {c: 0.0 for c in self.commodities}
+        #entry_notional = {c: 0.0 for c in self.commodities}
         
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
@@ -242,19 +242,17 @@ class BacktestEngine:
                 
                 # Calculate P&L from existing position (FIXED)
                 if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
-                    price_return = (current_price - self.entry_prices[commodity]) / self.entry_prices[commodity]
-                    
-                    # Use the INITIAL CAPITAL as base (prevents compounding bug)
-                    # This gives you simple returns, not geometric
-                    pnl = self.portfolio_value * old_position * price_return
+                    daily_return = (current_price - self.entry_prices[commodity]) / self.entry_prices[commodity]
+                    pnl = self.portfolio_value * old_position * daily_return
                     daily_pnl += pnl
                 
                 # Update position
+                self.entry_prices[commodity] = current_price
                 self.positions[commodity] = new_position
-                
+
                 # Update entry price when position changes
-                if abs(new_position - old_position) > 0.01:
-                    self.entry_prices[commodity] = current_price
+                #if abs(new_position - old_position) > 0.01:
+                #    self.entry_prices[commodity] = current_price
             
             # Update portfolio value
             self.portfolio_value += daily_pnl
