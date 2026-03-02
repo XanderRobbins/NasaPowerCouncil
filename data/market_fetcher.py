@@ -32,6 +32,17 @@ class MarketDataFetcher:
         'sugar': 'SB=F',
         'cotton': 'CT=F',
         'natural_gas': 'NG=F',
+        'corn': 'ZC=F',
+        'soybeans': 'ZS=F',
+        'wheat': 'ZW=F',
+        'coffee': 'KC=F',
+        'sugar': 'SB=F',
+        'cotton': 'CT=F',
+        'natural_gas': 'NG=F',
+        'live_cattle': 'LE=F',
+        'lean_hogs': 'HE=F',
+        'soybean_oil': 'ZL=F',
+        'soybean_meal': 'ZM=F',
     }
     
     def __init__(self):

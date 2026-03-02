@@ -6,78 +6,53 @@ import numpy as np
 from typing import Dict
 from loguru import logger
 
-
 def compute_metrics(results: pd.DataFrame) -> Dict:
-    """
-    Compute comprehensive backtest metrics.
-
-    Args:
-        results: Backtest results DataFrame
-
-    Returns:
-        Dict of metrics
-    """
     if results.empty or 'portfolio_return' not in results.columns:
         logger.warning("Empty results or missing portfolio_return column")
         return {}
-
     returns = results['portfolio_return'].dropna()
-
     if len(returns) == 0:
         logger.warning("No valid returns")
         return {}
 
-    # FIX: Separate active days (position held) from zero/flat days
-    active_returns = returns[returns != 0]
-
+    active_returns = returns[returns.abs() > 1e-8]
     if len(active_returns) == 0:
         logger.warning("No active trading days found")
         return {}
 
-    # Basic metrics
     total_return = (results['portfolio_value'].iloc[-1] / results['portfolio_value'].iloc[0]) - 1
-    n_years = len(returns) / 252  # Calendar years (for annualization)
-    n_active_years = len(active_returns) / 252  # Active trading years
-    annualized_return = (1 + total_return) ** (1 / n_years) - 1 if n_years > 0 else 0
+    n_years = (results['date'].iloc[-1] - results['date'].iloc[0]).days / 365.25
+    n_active_years = len(active_returns) / 252
 
-    # Volatility — computed on ALL returns (zeros reduce vol correctly)
-    daily_vol = returns.std()
-    annualized_vol = daily_vol * np.sqrt(252)
+    active_vol = active_returns.std() * np.sqrt(252)
+    active_annualized_return = (1 + total_return) ** (1 / n_active_years) - 1
 
-    # Sharpe ratio (assume 0% risk-free rate)
-    sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
+    sharpe = active_annualized_return / active_vol if active_vol > 0 else 0
 
-    # Drawdown — computed on full equity curve
-    cumulative = (1 + returns).cumprod()
-    running_max = cumulative.expanding().max()
-    drawdown = (cumulative - running_max) / running_max
+    portfolio_values = results['portfolio_value']
+    running_max = portfolio_values.expanding().max()
+    drawdown = (portfolio_values - running_max) / running_max
     max_drawdown = drawdown.min()
 
-    # FIX: Win rate — only count days where a position was actually held
     win_rate = (active_returns > 0).mean()
-
-    # Profit factor — on active days only
     gains = active_returns[active_returns > 0].sum()
     losses = abs(active_returns[active_returns < 0].sum())
     profit_factor = gains / losses if losses > 0 else np.inf
 
-    # Sortino ratio — downside deviation on active days only
-    downside_returns = active_returns[active_returns < 0]
-    downside_std = downside_returns.std() * np.sqrt(252)
-    sortino = annualized_return / downside_std if downside_std > 0 else 0
+    active_downside = active_returns[active_returns < 0]
+    active_downside_std = active_downside.std() * np.sqrt(252)
+    sortino = active_annualized_return / active_downside_std if active_downside_std > 0 else 0
 
-    # Calmar ratio
-    calmar = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
+    calmar = active_annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
 
-    # Average win / average loss
-    avg_win = active_returns[active_returns > 0].mean() if len(active_returns[active_returns > 0]) > 0 else 0
-    avg_loss = active_returns[active_returns < 0].mean() if len(active_returns[active_returns < 0]) > 0 else 0
+    avg_win = active_returns[active_returns > 0].mean() if (active_returns > 0).any() else 0
+    avg_loss = active_returns[active_returns < 0].mean() if (active_returns < 0).any() else 0
     win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else np.inf
 
     metrics = {
         'total_return': total_return,
-        'annualized_return': annualized_return,
-        'annualized_volatility': annualized_vol,
+        'annualized_return': active_annualized_return,
+        'annualized_volatility': active_vol,
         'sharpe_ratio': sharpe,
         'sortino_ratio': sortino,
         'calmar_ratio': calmar,
@@ -87,16 +62,13 @@ def compute_metrics(results: pd.DataFrame) -> Dict:
         'avg_win': avg_win,
         'avg_loss': avg_loss,
         'win_loss_ratio': win_loss_ratio,
-        'n_active_days': len(active_returns),   # FIX: actual trading days
-        'n_days_total': len(returns),            # Calendar days in backtest
+        'n_active_days': len(active_returns),
+        'n_days_total': len(returns),
         'n_years': n_years,
         'n_active_years': n_active_years,
     }
-
     logger.info("Computed performance metrics")
-
     return metrics
-
 
 def print_metrics(metrics: Dict):
     """Pretty print metrics."""

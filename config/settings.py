@@ -49,5 +49,26 @@ PHASE_1_COMMODITIES = ['corn', 'soybeans']
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# Growing Season Months (Northern Hemisphere)
-GROWING_SEASON_MONTHS = [4, 5, 6, 7, 8, 9]  # April-September
+# Growing Season Months (Northern Hemisphere)# Growing Season Months (Northern Hemisphere)
+# Parses comma-separated list from .env e.g. "6,7,8,9,10"
+# Fallback growing season months
+GROWING_SEASON_MONTHS = [
+    int(m.strip())
+    for m in os.getenv('GROWING_SEASON_MONTHS', '6,7,8,9,10').split(',')
+]
+
+# Per-commodity trade months — falls back to GROWING_SEASON_MONTHS if not set
+def get_trade_months(commodity: str) -> list:
+    """Get trade months for a specific commodity from environment."""
+    env_key = f"{commodity.upper()}_TRADE_MONTHS"
+    raw = os.getenv(env_key, None)
+    if raw:
+        return [int(m.strip()) for m in raw.split(',')]
+    return GROWING_SEASON_MONTHS
+
+
+# Commodities — now driven by .env
+PHASE_1_COMMODITIES = [
+    c.strip().lower()
+    for c in os.getenv('COMMODITIES', 'corn,soybeans').split(',')
+]

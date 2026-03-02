@@ -1,6 +1,7 @@
 """
 Compute seasonal deviations (Z-scores) from historical baseline.
 NO look-ahead bias: baseline uses only data prior to each observation.
+OPTIMIZED: Fully vectorized groupby expanding window — no row iteration.
 """
 import pandas as pd
 import numpy as np
@@ -11,12 +12,11 @@ def compute_seasonal_deviations(df: pd.DataFrame,
                                  baseline_years: int = 20) -> pd.DataFrame:
     """
     Compute Z-scores for weather variables relative to seasonal baseline.
-
     Z-score = (X_t - μ_season) / σ_season
 
-    FIXED: Uses expanding window grouped by day-of-year so that the
-    seasonal mean/std for any date t is computed ONLY from prior years'
-    observations on the same calendar day. No future data leaks in.
+    OPTIMIZED: Replaces O(n²) iterrows loop with vectorized groupby
+    expanding window. For each calendar day group, we compute the
+    expanding mean/std shifted by 1 year to ensure strict no look-ahead.
 
     Args:
         df: DataFrame with date, temp_max, temp_min, precipitation, etc.
@@ -31,11 +31,12 @@ def compute_seasonal_deviations(df: pd.DataFrame,
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date').reset_index(drop=True)
 
-    # Extract month-day key for seasonal grouping
-    df['month'] = df['date'].dt.month
-    df['day'] = df['date'].dt.day
-    df['month_day'] = df['month'].astype(str) + '-' + df['day'].astype(str)
+    # Extract grouping keys
+    df['month_day'] = df['date'].dt.strftime('%m-%d')
     df['year'] = df['date'].dt.year
+
+    # Store original index order so we can re-align after groupby operations
+    df['_orig_idx'] = df.index
 
     variables = ['temp_avg', 'temp_max', 'temp_min', 'precipitation']
 
@@ -44,44 +45,40 @@ def compute_seasonal_deviations(df: pd.DataFrame,
             logger.warning(f"Variable {var} not found in DataFrame, skipping")
             continue
 
-        seasonal_means = []
-        seasonal_stds = []
-
-        for idx, row in df.iterrows():
-            md = row['month_day']
-            yr = row['year']
-
-            # Only use same calendar day from PRIOR years
-            prior_same_day = df[
-                (df['month_day'] == md) & (df['year'] < yr)
-            ][var].dropna()
-
-            if len(prior_same_day) >= 2:
-                seasonal_means.append(prior_same_day.mean())
-                seasonal_stds.append(prior_same_day.std())
-            elif len(prior_same_day) == 1:
-                seasonal_means.append(prior_same_day.mean())
-                seasonal_stds.append(1.0)  # fallback std
-            else:
-                # Not enough history yet — use global variable mean as fallback
-                seasonal_means.append(df[var].mean())
-                seasonal_stds.append(df[var].std() if df[var].std() > 0 else 1.0)
-
-        df[f'{var}_seasonal_mean'] = seasonal_means
-        df[f'{var}_seasonal_std'] = seasonal_stds
-
-        # Compute Z-score
-        df[f'{var}_z'] = (
-            (df[var] - df[f'{var}_seasonal_mean'])
-            / (df[f'{var}_seasonal_std'] + 1e-6)
+        # --- Vectorized expanding mean/std per calendar day ---
+        # shift(1) inside the expanding window ensures we only use
+        # data from PRIOR years — no look-ahead bias [10]
+        expanding_mean = (
+            df.groupby('month_day')[var]
+            .transform(lambda x: x.shift(1).expanding().mean())
+        )
+        expanding_std = (
+            df.groupby('month_day')[var]
+            .transform(lambda x: x.shift(1).expanding().std())
         )
 
-        # Clean up intermediate columns
-        df = df.drop(columns=[f'{var}_seasonal_mean', f'{var}_seasonal_std'])
+        # --- Fallback: global mean/std for early rows with no prior history ---
+        global_mean = df[var].mean()
+        global_std = df[var].std()
+        global_std = global_std if global_std > 0 else 1.0
 
-    # Clean up
-    df = df.drop(columns=['month_day', 'year'])
+        seasonal_mean = expanding_mean.fillna(global_mean)
+        seasonal_std = expanding_std.fillna(global_std)
 
-    logger.debug(f"Computed seasonal deviations (no look-ahead) for {len(variables)} variables")
+        # Enforce minimum std to avoid division issues (single prior year case)
+        seasonal_std = seasonal_std.clip(lower=1e-6)
+
+        # --- Compute Z-score ---
+        df[f'{var}_z'] = (
+            (df[var] - seasonal_mean) / (seasonal_std + 1e-6)
+        ).clip(-3.0, 3.0)
+
+    # Clean up helper columns
+    df = df.drop(columns=['month_day', 'year', '_orig_idx'])
+
+    logger.debug(
+        f"Computed seasonal deviations (vectorized, no look-ahead) "
+        f"for {len(variables)} variables"
+    )
 
     return df
