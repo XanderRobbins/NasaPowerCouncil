@@ -60,9 +60,14 @@ COMMODITY_REGIONS = {
     'coffee': {
         'Minas_Gerais': {'lat': -19.0, 'lon': -44.0, 'weight': 0.45},
         'Sao_Paulo': {'lat': -22.0, 'lon': -47.0, 'weight': 0.35},
-        'Espirito_Santo': {'lat': -20.0, 'lon': -41.0, 'weight': 0.20},
+        #'Espirito_Santo': {'lat': -20.0, 'lon': -41.0, 'weight': 0.20},
     },
 
+    'cocoa': {
+        'Ivory_Coast': {'lat': 6.8, 'lon': -5.3, 'weight': 0.45},
+        'Ghana': {'lat': 7.9, 'lon': -1.0, 'weight': 0.35},
+        'Nigeria': {'lat': 6.5, 'lon': 3.4, 'weight': 0.20},
+    },
     'sugar': {
         'Sao_Paulo_Sugar': {'lat': -21.5, 'lon': -48.0, 'weight': 0.50},
         'Louisiana': {'lat': 30.0, 'lon': -91.5, 'weight': 0.25},

@@ -101,6 +101,16 @@ CRITICAL_THRESHOLDS = {
         'gdd_base': 10,
         'gdd_optimal': 30,
     },
+    
+    'cocoa': {
+    'temp_critical_high': 32,
+    'temp_critical_low': 18,
+    'temp_optimal': 26,
+    'precip_threshold_dry': 30,
+    'precip_threshold_wet': 200,
+    'gdd_base': 15,
+    'gdd_optimal': 28,
+},
 }
 
 def get_thresholds(commodity: str) -> dict:

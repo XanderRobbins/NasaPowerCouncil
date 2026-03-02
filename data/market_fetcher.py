@@ -43,6 +43,7 @@ class MarketDataFetcher:
         'lean_hogs': 'HE=F',
         'soybean_oil': 'ZL=F',
         'soybean_meal': 'ZM=F',
+        'cocoa': 'CC=F',
     }
     
     def __init__(self):

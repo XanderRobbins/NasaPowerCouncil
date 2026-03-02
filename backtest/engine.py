@@ -16,6 +16,7 @@ from features.feature_pipeline import FeaturePipeline
 from models.ridge_model import RollingRidgeModel
 from models.classifier_model import DirectionalClassifier
 from config.settings import (
+    os,
     GROWING_SEASON_MONTHS,
     ONLY_TRADE_GROWING_SEASON,
     STRATEGY_MODE,
@@ -24,6 +25,7 @@ from config.settings import (
     MIN_SIGNAL_STRENGTH,
     MAX_SINGLE_POSITION,
     TRAIN_WINDOW_YEARS,
+    get_vol_regime_threshold,
     get_trade_months
 )
 
@@ -255,10 +257,20 @@ class BacktestEngine:
                     commodity,
                     current_date
                 )
-
                 # Realized vol (20-day)
                 returns = prices_up_to_now.pct_change()
                 vol = returns.iloc[-20:].std() * np.sqrt(252)
+
+                # --- Per-commodity volatility regime filter ---
+                vol_threshold = get_vol_regime_threshold(commodity)
+                if vol > vol_threshold:
+                    logger.info(
+                        f"{commodity} vol regime too high ({vol:.1%}) "
+                        f"vs threshold ({vol_threshold:.1%}) "
+                        f"on {current_date.date()} — skipping signal"
+                    )
+                    commodity_vols[commodity] = vol
+                    continue
 
                 commodity_signals[commodity] = signal
                 commodity_vols[commodity] = vol
