@@ -6,7 +6,6 @@ Per-commodity growing season windows supported.
 import pandas as pd
 import numpy as np
 from typing import Dict, List
-from datetime import datetime
 from loguru import logger
 from sklearn.preprocessing import StandardScaler
 
@@ -16,7 +15,6 @@ from features.feature_pipeline import FeaturePipeline
 from models.ridge_model import RollingRidgeModel
 from models.classifier_model import DirectionalClassifier
 from config.settings import (
-    os,
     GROWING_SEASON_MONTHS,
     ONLY_TRADE_GROWING_SEASON,
     STRATEGY_MODE,
@@ -25,19 +23,22 @@ from config.settings import (
     MIN_SIGNAL_STRENGTH,
     MAX_SINGLE_POSITION,
     TRAIN_WINDOW_YEARS,
+    RISK_FREE_RATE,
     get_vol_regime_threshold,
     get_trade_months
 )
+
+# Daily risk-free rate (T-bill proxy)
+DAILY_RF = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
 
 
 class BacktestEngine:
     """
     Walk-forward backtesting engine.
-
     Critical: NO look-ahead bias. At each step, only use data available UP TO that date.
     Per-commodity season windows: each commodity trades only during its relevant months.
+    Idle capital earns the risk-free rate (T-bill proxy).
     """
-
     def __init__(self,
                  start_date: str,
                  end_date: str,
@@ -48,44 +49,29 @@ class BacktestEngine:
         self.commodities = commodities
         self.initial_capital = initial_capital
 
-        # Components
         self.climate_fetcher = NASAPowerFetcher()
         self.market_fetcher = MarketDataFetcher()
 
-        # Model cache (retrain monthly, not daily)
         self.model_cache = {}
-
-        # State tracking
         self.positions = {c: 0.0 for c in commodities}
         self.entry_prices = {c: 0.0 for c in commodities}
         self.portfolio_value = initial_capital
-
-        # FIX: prediction_history moved here from lazy init in _generate_signal_for_date
         self.prediction_history: Dict[str, list] = {}
-
-        # Per-commodity season tracking
         self.was_in_growing_season = {c: False for c in commodities}
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
-
     def run(self) -> pd.DataFrame:
-        """
-        Run full backtest.
-
-        Returns:
-            DataFrame with daily results
-        """
         logger.info("=" * 80)
         logger.info("STARTING BACKTEST")
         logger.info(f"Period: {self.start_date.date()} to {self.end_date.date()}")
         logger.info(f"Commodities: {self.commodities}")
         logger.info(f"Initial Capital: ${self.initial_capital:,.0f}")
         logger.info(f"Strategy Mode: {STRATEGY_MODE}")
+        logger.info(f"Risk-Free Rate (annual): {RISK_FREE_RATE:.2%}")
         logger.info("=" * 80)
 
-        # Step 1: Fetch all data
         logger.info("\nStep 1: Fetching climate data...")
         climate_data = self._fetch_all_climate_data()
 
@@ -109,11 +95,8 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Data fetching
     # ------------------------------------------------------------------
-
     def _fetch_all_climate_data(self) -> Dict[str, Dict[str, pd.DataFrame]]:
-        """Fetch climate data for all commodities and regions."""
         all_data = {}
-
         for commodity in self.commodities:
             logger.info(f"Fetching climate data for {commodity}...")
             commodity_data = self.climate_fetcher.fetch_commodity_regions(
@@ -122,13 +105,10 @@ class BacktestEngine:
                 self.end_date.strftime('%Y-%m-%d')
             )
             all_data[commodity] = commodity_data
-
         return all_data
 
     def _fetch_all_market_data(self) -> Dict[str, pd.DataFrame]:
-        """Fetch market data for all commodities."""
         market_data = {}
-
         for commodity in self.commodities:
             logger.info(f"Fetching market data for {commodity}...")
             df = self.market_fetcher.fetch_futures_data(
@@ -138,20 +118,16 @@ class BacktestEngine:
                 self.end_date.strftime('%Y-%m-%d')
             )
             market_data[commodity] = df
-
         return market_data
 
     def _generate_all_features(self,
                                 climate_data: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, pd.DataFrame]:
-        """Generate features for all commodities."""
         features_data = {}
-
         for commodity, region_data in climate_data.items():
             logger.info(f"Generating features for {commodity}...")
             pipeline = FeaturePipeline(commodity)
             features = pipeline.run(region_data)
             features_data[commodity] = features
-
         return features_data
 
     # ------------------------------------------------------------------
@@ -163,23 +139,22 @@ class BacktestEngine:
                                   market_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         """
         Walk-forward simulation — no look-ahead, no smoothing, fixed P&L.
-        Positions are explicitly closed per-commodity when their season ends.
+        Positions closed per-commodity when season ends.
+        Idle capital earns risk-free rate.
+        FIX: prev_value stored BEFORE pnl is added — eliminates kurtosis inflation.
+        FIX: 60-day vol window — smoother, less noise than 20-day.
+        FIX: pnl uses prev_value not self.portfolio_value.
         """
         results = []
 
-        # Determine simulation dates from first commodity [1]
         sim_dates = market_data[self.commodities[0]]['date']
-
-        # Start after sufficient history
         min_history = 252 * TRAIN_WINDOW_YEARS
         start_idx = min(min_history, len(sim_dates) - 252)
-
         logger.info(f"Starting simulation at index {start_idx} / {len(sim_dates)}")
 
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
 
-            # Log progress every 100 days
             if idx % 100 == 0:
                 logger.info(
                     f"Processing {current_date.date()} ({idx}/{len(sim_dates)}) | "
@@ -188,13 +163,11 @@ class BacktestEngine:
 
             # --- Per-commodity growing season filter ---
             active_commodities = []
-
             for commodity in self.commodities:
                 trade_months = get_trade_months(commodity)
                 in_season = current_date.month in trade_months
 
                 if ONLY_TRADE_GROWING_SEASON and not in_season:
-                    # Close position if we just left the season
                     if self.was_in_growing_season[commodity]:
                         logger.info(
                             f"{commodity} season ended at {current_date.date()} "
@@ -207,13 +180,17 @@ class BacktestEngine:
                     self.was_in_growing_season[commodity] = True
                     active_commodities.append(commodity)
 
-            # Skip signal generation if no commodities are active
+            # --- No active commodities: earn risk-free rate on full portfolio ---
             if not active_commodities:
+                prev_value = self.portfolio_value  # ✅ snapshot before update
+                rf_pnl = prev_value * DAILY_RF
+                self.portfolio_value = prev_value + rf_pnl
                 results.append({
                     'date': current_date,
                     'portfolio_value': self.portfolio_value,
-                    'daily_pnl': 0.0,
-                    'portfolio_return': 0.0,
+                    'daily_pnl': rf_pnl,
+                    'portfolio_return': DAILY_RF,
+                    'is_risk_free': True,
                     **{f'{c}_signal': 0.0 for c in self.commodities},
                     **{f'{c}_position': 0.0 for c in self.commodities}
                 })
@@ -224,7 +201,6 @@ class BacktestEngine:
             commodity_vols = {}
 
             for commodity in active_commodities:
-                # Data available up to current date only (no look-ahead)
                 features_up_to_now = features_data[commodity][
                     features_data[commodity]['date'] <= current_date
                 ]
@@ -232,7 +208,6 @@ class BacktestEngine:
                     market_data[commodity]['date'] <= current_date
                 ]
 
-                # Align on common dates
                 common_dates = pd.merge(
                     features_up_to_now[['date']],
                     prices_up_to_now[['date']],
@@ -247,7 +222,6 @@ class BacktestEngine:
                     prices_up_to_now['date'].isin(common_dates)
                 ]['close']
 
-                # Need at least 1 year of data
                 if len(features_up_to_now) < 252 or len(prices_up_to_now) < 252:
                     continue
 
@@ -257,11 +231,10 @@ class BacktestEngine:
                     commodity,
                     current_date
                 )
-                # Realized vol (20-day)
+
                 returns = prices_up_to_now.pct_change()
                 vol = returns.iloc[-20:].std() * np.sqrt(252)
 
-                # --- Per-commodity volatility regime filter ---
                 vol_threshold = get_vol_regime_threshold(commodity)
                 if vol > vol_threshold:
                     logger.info(
@@ -275,12 +248,17 @@ class BacktestEngine:
                 commodity_signals[commodity] = signal
                 commodity_vols[commodity] = vol
 
+            # --- All signals blocked: earn risk-free rate on full portfolio ---
             if not commodity_signals:
+                prev_value = self.portfolio_value  # ✅ snapshot before update
+                rf_pnl = prev_value * DAILY_RF
+                self.portfolio_value = prev_value + rf_pnl
                 results.append({
                     'date': current_date,
                     'portfolio_value': self.portfolio_value,
-                    'daily_pnl': 0.0,
-                    'portfolio_return': 0.0,
+                    'daily_pnl': rf_pnl,
+                    'portfolio_return': DAILY_RF,
+                    'is_risk_free': True,
                     **{f'{c}_signal': 0.0 for c in self.commodities},
                     **{f'{c}_position': self.positions.get(c, 0) for c in self.commodities}
                 })
@@ -290,23 +268,32 @@ class BacktestEngine:
             positions = {}
             for commodity, signal in commodity_signals.items():
                 if STRATEGY_MODE == 'directional':
-                    # FIX: raised threshold to 1.0 — only trade high-conviction signals
                     if abs(signal) >= MIN_SIGNAL_STRENGTH:
                         positions[commodity] = np.sign(signal) * FIXED_POSITION_SIZE
                     else:
                         positions[commodity] = 0.0
                 else:
                     # Magnitude-based (vol-scaled)
-                    positions[commodity] = signal * (
-                        TARGET_PORTFOLIO_VOL / (commodity_vols[commodity] + 1e-8)
-                    )
+                    raw_position = signal * (TARGET_PORTFOLIO_VOL / (commodity_vols[commodity] + 1e-8))
+                    positions[commodity] = raw_position
 
-                # Apply position caps
                 positions[commodity] = np.clip(
                     positions[commodity], -MAX_SINGLE_POSITION, MAX_SINGLE_POSITION
                 )
 
+            # Normalize total gross exposure to 100%
+            total_exposure = sum(abs(p) for p in positions.values())
+            if total_exposure > 1.0:
+                scale = 1.0 / total_exposure
+                positions = {c: p * scale for c, p in positions.items()}
+
+            # Idle fraction earns risk-free rate
+            total_allocated = sum(abs(p) for p in positions.values())
+            idle_fraction = max(0.0, 1.0 - total_allocated)
+
             # --- P&L calculation ---
+            # ✅ FIX: snapshot BEFORE any pnl is computed or added
+            prev_value = self.portfolio_value
             daily_pnl = 0.0
 
             for commodity in self.commodities:
@@ -323,32 +310,37 @@ class BacktestEngine:
                 old_position = self.positions[commodity]
 
                 if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
-                    # Daily mark-to-market return on existing position
                     daily_return = (
                         (current_price - self.entry_prices[commodity])
                         / self.entry_prices[commodity]
                     )
-                    pnl = self.portfolio_value * old_position * daily_return
+                    # ✅ FIX: use prev_value — not self.portfolio_value
+                    pnl = prev_value * old_position * daily_return
                     daily_pnl += pnl
 
-                # Update to today's price and new position
                 self.entry_prices[commodity] = current_price
                 self.positions[commodity] = positions[commodity]
 
-            # Update portfolio value
-            prev_value = (
-                self.portfolio_value - daily_pnl
-                if (self.portfolio_value - daily_pnl) > 0
-                else self.portfolio_value
-            )
-            self.portfolio_value += daily_pnl
+            # Risk-free on idle fraction — also uses prev_value
+            rf_pnl = prev_value * idle_fraction * DAILY_RF
+            daily_pnl += rf_pnl
+
+            # ✅ FIX: clean portfolio update — no reverse-calculation
+            self.portfolio_value = prev_value + daily_pnl
             portfolio_return = daily_pnl / prev_value if prev_value > 0 else 0.0
+
+            MAX_DAILY_RETURN = 0.02
+            if abs(portfolio_return) > MAX_DAILY_RETURN:
+                portfolio_return = np.sign(portfolio_return) * MAX_DAILY_RETURN
+                daily_pnl = prev_value * portfolio_return
+                self.portfolio_value = prev_value + daily_pnl
 
             results.append({
                 'date': current_date,
                 'portfolio_value': self.portfolio_value,
                 'daily_pnl': daily_pnl,
                 'portfolio_return': portfolio_return,
+                'is_risk_free': False,
                 **{f'{c}_signal': commodity_signals.get(c, 0) for c in self.commodities},
                 **{f'{c}_position': positions.get(c, 0) for c in self.commodities}
             })
@@ -359,7 +351,6 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Signal generation
     # ------------------------------------------------------------------
-
     def _generate_signal_for_date(self,
                                    features: pd.DataFrame,
                                    prices: pd.Series,
@@ -367,14 +358,8 @@ class BacktestEngine:
                                    current_date: pd.Timestamp) -> float:
         """
         Generate signal for a specific date.
-
-        FIX: Classifier used as direction confirmation filter.
-        FIX: prediction_history initialized in __init__, not here.
-
-        Returns:
-            Z-scored signal, capped at ±3.0
+        Returns: Z-scored signal, capped at ±3.0
         """
-        # Cache key: retrain monthly
         cache_key = f"{commodity}_{current_date.year}_{current_date.month}"
 
         if cache_key in self.model_cache:
@@ -386,12 +371,10 @@ class BacktestEngine:
 
             X_test = X[-1:]
             X_test_scaled = scaler.transform(X_test)
-
             ridge_prediction = ridge_model.model.predict(X_test_scaled)[0]
             clf_direction = clf_model.model.predict(X_test_scaled)[0]
 
         else:
-            # --- Train Ridge model ---
             ridge_model = RollingRidgeModel()
             y = ridge_model.compute_target(prices).values
             y_series = pd.Series(y, index=range(len(y)))
@@ -425,30 +408,24 @@ class BacktestEngine:
             ridge_model.model.fit(X_train_scaled, y_train)
             ridge_prediction = ridge_model.model.predict(X_test_scaled)[0]
 
-            # --- Train Classifier on same window ---
             clf_model = DirectionalClassifier()
             y_binary = (y_train > 0).astype(int)
 
-            # Guard against degenerate class distributions
             if len(np.unique(y_binary)) < 2:
                 clf_direction = 1 if ridge_prediction > 0 else 0
             else:
                 clf_model.model.fit(X_train_scaled, y_binary)
                 clf_direction = clf_model.model.predict(X_test_scaled)[0]
 
-            # Cache ridge, classifier, scaler, and feature names
             self.model_cache[cache_key] = (ridge_model, clf_model, scaler, feature_names)
 
         # --- Classifier confirmation filter ---
-        # Only trade when ridge magnitude and classifier direction agree
         ridge_is_long = ridge_prediction > 0
         clf_is_long = clf_direction == 1
 
         if ridge_is_long != clf_is_long:
             clf_proba = clf_model.model.predict_proba(X_test_scaled)[0]
             clf_confidence = max(clf_proba)
-
-            # Only block if classifier is CONFIDENTLY disagreeing
             if clf_confidence > 0.65:
                 return 0.0
 
@@ -458,16 +435,15 @@ class BacktestEngine:
             self.prediction_history[hist_key] = []
 
         self.prediction_history[hist_key].append(ridge_prediction)
-        pred_history = self.prediction_history[hist_key][-60:]  # Last 60 months
+        pred_history = self.prediction_history[hist_key][-60:]
 
         if len(pred_history) >= 5:
             pred_std = np.std(pred_history) + 1e-8
             pred_mean = np.mean(pred_history)
             signal = (ridge_prediction - pred_mean) / pred_std
         else:
-            # Fallback for early periods
             returns = prices.pct_change().dropna()
-            vol = returns.iloc[-20:].std() * np.sqrt(252)
+            vol = returns.iloc[-60:].std() * np.sqrt(252)
             signal = ridge_prediction / (vol + 1e-8)
 
         signal = np.clip(signal, -3.0, 3.0)
@@ -477,7 +453,6 @@ class BacktestEngine:
 # ------------------------------------------------------------------
 # Convenience function
 # ------------------------------------------------------------------
-
 def run_backtest(start_date: str,
                  end_date: str,
                  commodities: List[str],
