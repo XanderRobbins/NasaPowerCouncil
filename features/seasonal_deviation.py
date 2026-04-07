@@ -44,43 +44,20 @@ def compute_seasonal_deviations(df: pd.DataFrame,
             logger.warning(f"Variable {var} not found in DataFrame, skipping")
             continue
 
-        seasonal_means = []
-        seasonal_stds = []
+        global_mean = df[var].mean()
+        global_std = df[var].std() if df[var].std() > 0 else 1.0
 
-        for idx, row in df.iterrows():
-            md = row['month_day']
-            yr = row['year']
-
-            # Only use same calendar day from PRIOR years
-            prior_same_day = df[
-                (df['month_day'] == md) & (df['year'] < yr)
-            ][var].dropna()
-
-            if len(prior_same_day) >= 2:
-                seasonal_means.append(prior_same_day.mean())
-                seasonal_stds.append(prior_same_day.std())
-            elif len(prior_same_day) == 1:
-                seasonal_means.append(prior_same_day.mean())
-                seasonal_stds.append(1.0)  # fallback std
-            else:
-                # Not enough history yet — use global variable mean as fallback
-                seasonal_means.append(df[var].mean())
-                seasonal_stds.append(df[var].std() if df[var].std() > 0 else 1.0)
-
-        df[f'{var}_seasonal_mean'] = seasonal_means
-        df[f'{var}_seasonal_std'] = seasonal_stds
+        # Vectorized: within each calendar-day group (already sorted by date/year),
+        # expanding().mean/std gives cumulative stats; shift(1) excludes current year
+        grp = df.groupby('month_day', sort=False)[var]
+        seas_mean = grp.transform(lambda x: x.expanding().mean().shift(1)).fillna(global_mean)
+        seas_std  = grp.transform(lambda x: x.expanding().std().shift(1)).fillna(global_std)
 
         # Compute Z-score
-        df[f'{var}_z'] = (
-            (df[var] - df[f'{var}_seasonal_mean'])
-            / (df[f'{var}_seasonal_std'] + 1e-6)
-        )
-
-        # Clean up intermediate columns
-        df = df.drop(columns=[f'{var}_seasonal_mean', f'{var}_seasonal_std'])
+        df[f'{var}_z'] = (df[var] - seas_mean) / (seas_std + 1e-6)
 
     # Clean up
-    df = df.drop(columns=['month_day', 'year'])
+    df = df.drop(columns=['month', 'day', 'month_day', 'year'])
 
     logger.debug(f"Computed seasonal deviations (no look-ahead) for {len(variables)} variables")
 

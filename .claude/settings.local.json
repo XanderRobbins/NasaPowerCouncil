@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/xande/OnDevice/AlgoGators/IP''''''''s/**)",
+      "Bash(pip install:*)",
+      "Bash(python -m pip install -q quantstats)",
+      "Bash(python -m pip install -q pyarrow)",
+      "Bash(BACKTEST_START_DATE=2020-01-01 BACKTEST_END_DATE=2025-01-01 python main.py)",
+      "Bash(BACKTEST_START_DATE=2020-01-01 BACKTEST_END_DATE=2025-01-01 timeout 600 python main.py)",
+      "Bash(BACKTEST_START_DATE=2020-01-01 BACKTEST_END_DATE=2025-01-01 python main.py 2)",
+      "Bash(1)",
+      "Bash(BACKTEST_START_DATE=2020-01-01 BACKTEST_END_DATE=2025-01-01 python -u main.py)",
+      "Bash(python main.py)",
+      "Bash(grep:*)"
+    ]
+  }
+}

@@ -3,6 +3,7 @@ Orchestrate the full feature engineering pipeline.
 """
 import pandas as pd
 from typing import Dict
+from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 
 from features.seasonal_deviation import compute_seasonal_deviations
@@ -56,10 +57,13 @@ class FeaturePipeline:
             Dict mapping region names to processed DataFrames
         """
         processed = {}
-        
-        for region, df in region_dfs.items():
-            processed[region] = self.process_region(df, region)
-        
+
+        with ThreadPoolExecutor() as executor:
+            futures = {region: executor.submit(self.process_region, df, region)
+                       for region, df in region_dfs.items()}
+            for region, future in futures.items():
+                processed[region] = future.result()
+
         return processed
     
     def aggregate(self, processed_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:

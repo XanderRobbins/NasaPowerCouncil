@@ -40,25 +40,38 @@ def aggregate_regional_features(commodity: str,
     
     logger.info(f"Aggregating {len(stress_cols)} stress features across {len(region_dfs)} regions")
     
-    # Aggregate each feature
+    # Aggregate each feature: vectorized weighted sum per region
     for col in stress_cols:
-        aggregated[f'{col}_agg'] = 0.0
-        
+        # Build a wide dataframe with all regions for this column at once
+        col_frames = [aggregated[['date']].copy()]
+
         for region_name, df in region_dfs.items():
             if col not in df.columns:
                 continue
-            
+
             weight = regions[region_name]['weight']
-            
-            # Merge regional data
-            regional_data = df[['date', col]].rename(columns={col: f'{col}_temp'})
-            aggregated = aggregated.merge(regional_data, on='date', how='left')
-            
-            # Add weighted contribution
-            aggregated[f'{col}_agg'] += aggregated[f'{col}_temp'].fillna(0) * weight
-            
-            # Clean up temp column
-            aggregated = aggregated.drop(columns=[f'{col}_temp'])
+            regional_data = df[['date', col]].copy()
+            regional_data.columns = ['date', f'{region_name}_{col}']
+            col_frames.append(regional_data)
+
+        # Merge all at once
+        if len(col_frames) > 1:
+            temp_df = col_frames[0]
+            for rf in col_frames[1:]:
+                temp_df = temp_df.merge(rf, on='date', how='left')
+
+            # Compute weighted sum
+            weighted_cols = [c for c in temp_df.columns if c.endswith(f'_{col}')]
+            agg_values = np.zeros(len(temp_df))
+
+            for col_name in weighted_cols:
+                region_name = col_name.replace(f'_{col}', '')
+                weight = regions[region_name]['weight']
+                agg_values += temp_df[col_name].fillna(0).values * weight
+
+            aggregated[f'{col}_agg'] = agg_values
+        else:
+            aggregated[f'{col}_agg'] = 0.0
     
     # Forward fill missing values (FIXED for pandas 2.0+)
     for col in aggregated.columns:

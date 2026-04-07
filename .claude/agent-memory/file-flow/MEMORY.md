@@ -1,0 +1,1 @@
+- [Project Architecture](project_architecture.md) — NasaPowerCouncil end-to-end data flow, module map, and key design decisions

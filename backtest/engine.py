@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from sklearn.preprocessing import StandardScaler
 
@@ -22,7 +23,9 @@ from config.settings import (
     TARGET_PORTFOLIO_VOL,
     MIN_SIGNAL_STRENGTH,
     MAX_SINGLE_POSITION,
-    TRAIN_WINDOW_YEARS
+    TRAIN_WINDOW_YEARS,
+    COMMODITY_TRADE_MONTHS,
+    COMMODITY_VOL_THRESHOLDS
 )
 
 
@@ -53,6 +56,7 @@ class BacktestEngine:
         # State tracking
         self.positions = {c: 0.0 for c in commodities}
         self.entry_prices = {c: 0.0 for c in commodities}
+        self.entry_price_at_open = {c: 0.0 for c in commodities}  # Track true entry price for stop loss
         self.portfolio_value = initial_capital
 
         # FIX: prediction_history moved here from lazy init in _generate_signal_for_date
@@ -135,14 +139,18 @@ class BacktestEngine:
 
     def _generate_all_features(self,
                                 climate_data: Dict[str, Dict[str, pd.DataFrame]]) -> Dict[str, pd.DataFrame]:
-        """Generate features for all commodities."""
-        features_data = {}
-
-        for commodity, region_data in climate_data.items():
+        """Generate features for all commodities (parallel across commodities)."""
+        def _run_pipeline(commodity, region_data):
             logger.info(f"Generating features for {commodity}...")
             pipeline = FeaturePipeline(commodity)
-            features = pipeline.run(region_data)
-            features_data[commodity] = features
+            return commodity, pipeline.run(region_data)
+
+        features_data = {}
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(_run_pipeline, c, d) for c, d in climate_data.items()]
+            for future in futures:
+                commodity, features = future.result()
+                features_data[commodity] = features
 
         return features_data
 
@@ -167,6 +175,15 @@ class BacktestEngine:
         start_idx = min(min_history, len(sim_dates) - 252)
 
         logger.info(f"Starting simulation at index {start_idx} / {len(sim_dates)}")
+
+        # Pre-index market data by date for O(1) lookups
+        market_by_date = {
+            c: df.set_index('date') for c, df in market_data.items()
+        }
+
+        # Pre-sort features DataFrames and store their date arrays for fast slicing
+        features_dates = {c: df['date'].values for c, df in features_data.items()}
+        market_dates   = {c: df['date'].values for c, df in market_data.items()}
 
         # Track whether last day was in growing season (for explicit position close)
         was_in_growing_season = False
@@ -210,13 +227,17 @@ class BacktestEngine:
             commodity_vols = {}
 
             for commodity in self.commodities:
+                # Skip commodity if outside its trading months
+                if current_date.month not in COMMODITY_TRADE_MONTHS[commodity]:
+                    continue
+
                 # Data available up to current date only (no look-ahead)
-                features_up_to_now = features_data[commodity][
-                    features_data[commodity]['date'] <= current_date
-                ]
-                prices_up_to_now = market_data[commodity][
-                    market_data[commodity]['date'] <= current_date
-                ]
+                # Use searchsorted for fast date slicing instead of boolean masks
+                ts = np.datetime64(current_date)
+                f_cut = int(np.searchsorted(features_dates[commodity], ts, side='right'))
+                m_cut = int(np.searchsorted(market_dates[commodity],   ts, side='right'))
+                features_up_to_now = features_data[commodity].iloc[:f_cut]
+                prices_up_to_now   = market_data[commodity].iloc[:m_cut]
 
                 # Align on common dates
                 common_dates = pd.merge(
@@ -247,6 +268,10 @@ class BacktestEngine:
                 # Realized vol (20-day)
                 returns = prices_up_to_now.pct_change()
                 vol = returns.iloc[-20:].std() * np.sqrt(252)
+
+                # Volatility regime filter: skip trade if vol exceeds threshold
+                if vol > COMMODITY_VOL_THRESHOLDS[commodity]:
+                    signal = 0.0
 
                 commodity_signals[commodity] = signal
                 commodity_vols[commodity] = vol
@@ -290,14 +315,19 @@ class BacktestEngine:
                 if commodity not in positions:
                     continue
 
-                price_row = market_data[commodity][
-                    market_data[commodity]['date'] == current_date
-                ]
-                if price_row.empty:
+                if current_date not in market_by_date[commodity].index:
                     continue
 
-                current_price = price_row['close'].iloc[0]
+                current_price = market_by_date[commodity].at[current_date, 'close']
                 old_position = self.positions[commodity]
+                new_position = positions[commodity]
+                exit_price = current_price  # Default: exit at market
+
+                # --- Stop loss check (5% per-position) ---
+                if abs(old_position) > 1e-6 and self.entry_price_at_open[commodity] > 0:
+                    unrealized_loss = (current_price - self.entry_price_at_open[commodity]) / self.entry_price_at_open[commodity]
+                    if unrealized_loss < -0.05:  # Loss exceeds 5%
+                        new_position = 0.0  # Force close the position
 
                 if abs(old_position) > 1e-6 and self.entry_prices[commodity] > 0:
                     # Daily mark-to-market return on existing position
@@ -308,9 +338,17 @@ class BacktestEngine:
                     pnl = self.portfolio_value * old_position * daily_return
                     daily_pnl += pnl
 
+                # Record entry price when position opens (transitions from ~0 to non-0)
+                if abs(old_position) < 1e-6 and abs(new_position) > 1e-6:
+                    self.entry_price_at_open[commodity] = current_price
+
+                # Reset entry price when position closes
+                if abs(new_position) < 1e-6:
+                    self.entry_price_at_open[commodity] = 0.0
+
                 # Update to today's price and new position
                 self.entry_prices[commodity] = current_price
-                self.positions[commodity] = positions[commodity]
+                self.positions[commodity] = new_position
 
             # Update portfolio value
             prev_value = self.portfolio_value - daily_pnl if (self.portfolio_value - daily_pnl) > 0 else self.portfolio_value
