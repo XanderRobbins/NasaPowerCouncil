@@ -26,13 +26,8 @@ from config.settings import (
     MIN_SIGNAL_STRENGTH,
     MAX_SINGLE_POSITION,
     TRAIN_WINDOW_YEARS,
-<<<<<<< HEAD
     COMMODITY_TRADE_MONTHS,
     COMMODITY_VOL_THRESHOLDS
-=======
-    get_vol_regime_threshold,
-    get_trade_months
->>>>>>> be3033f6e43f86a6455c13948f714e91c8606a8b
 )
 
 
@@ -187,7 +182,6 @@ class BacktestEngine:
 
         logger.info(f"Starting simulation at index {start_idx} / {len(sim_dates)}")
 
-<<<<<<< HEAD
         # Pre-index market data by date for O(1) lookups
         market_by_date = {
             c: df.set_index('date') for c, df in market_data.items()
@@ -200,8 +194,6 @@ class BacktestEngine:
         # Track whether last day was in growing season (for explicit position close)
         was_in_growing_season = False
 
-=======
->>>>>>> be3033f6e43f86a6455c13948f714e91c8606a8b
         for idx in range(start_idx, len(sim_dates)):
             current_date = sim_dates.iloc[idx]
 
@@ -216,7 +208,7 @@ class BacktestEngine:
             active_commodities = []
 
             for commodity in self.commodities:
-                trade_months = get_trade_months(commodity)
+                trade_months = COMMODITY_TRADE_MONTHS.get(commodity, [])
                 in_season = current_date.month in trade_months
 
                 if ONLY_TRADE_GROWING_SEASON and not in_season:
@@ -249,15 +241,11 @@ class BacktestEngine:
             commodity_signals = {}
             commodity_vols = {}
 
-<<<<<<< HEAD
             for commodity in self.commodities:
                 # Skip commodity if outside its trading months
                 if current_date.month not in COMMODITY_TRADE_MONTHS[commodity]:
                     continue
 
-=======
-            for commodity in active_commodities:
->>>>>>> be3033f6e43f86a6455c13948f714e91c8606a8b
                 # Data available up to current date only (no look-ahead)
                 # Use searchsorted for fast date slicing instead of boolean masks
                 ts = np.datetime64(current_date)
@@ -295,22 +283,9 @@ class BacktestEngine:
                 returns = prices_up_to_now.pct_change()
                 vol = returns.iloc[-20:].std() * np.sqrt(252)
 
-<<<<<<< HEAD
                 # Volatility regime filter: skip trade if vol exceeds threshold
                 if vol > COMMODITY_VOL_THRESHOLDS[commodity]:
                     signal = 0.0
-=======
-                # --- Per-commodity volatility regime filter ---
-                vol_threshold = get_vol_regime_threshold(commodity)
-                if vol > vol_threshold:
-                    logger.info(
-                        f"{commodity} vol regime too high ({vol:.1%}) "
-                        f"vs threshold ({vol_threshold:.1%}) "
-                        f"on {current_date.date()} — skipping signal"
-                    )
-                    commodity_vols[commodity] = vol
-                    continue
->>>>>>> be3033f6e43f86a6455c13948f714e91c8606a8b
 
                 commodity_signals[commodity] = signal
                 commodity_vols[commodity] = vol

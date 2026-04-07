@@ -49,7 +49,6 @@ PHASE_1_COMMODITIES = ['corn']
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO') or 'INFO'
 
-<<<<<<< HEAD
 # Per-commodity trade months (loaded from .env)
 COMMODITY_TRADE_MONTHS = {}
 for commodity in PHASE_1_COMMODITIES:
@@ -66,42 +65,3 @@ for commodity in PHASE_1_COMMODITIES:
 
 # Union of all trade months (used for outer loop gating)
 GROWING_SEASON_MONTHS = sorted(list(set([m for months in COMMODITY_TRADE_MONTHS.values() for m in months])))
-=======
-# Growing Season Months (Northern Hemisphere)# Growing Season Months (Northern Hemisphere)
-# Parses comma-separated list from .env e.g. "6,7,8,9,10"
-# Fallback growing season months
-GROWING_SEASON_MONTHS = [
-    int(m.strip())
-    for m in os.getenv('GROWING_SEASON_MONTHS', '6,7,8,9,10').split(',')
-]
-
-def get_vol_regime_threshold(commodity: str) -> float:
-    env_key = f"{commodity.upper()}_VOL_REGIME_THRESHOLD"
-    raw = os.getenv(env_key, None)
-    if raw:
-        return float(raw)
-    # Fall back to global, then hardcoded default
-    global_raw = os.getenv('VOL_REGIME_THRESHOLD', None)
-    if global_raw:
-        return float(global_raw)
-    # Hardcoded last resort — set this to whatever makes sense for your system
-    return 0.25
-
-# Per-commodity trade months — falls back to GROWING_SEASON_MONTHS if not set
-def get_trade_months(commodity: str) -> list:
-    """Get trade months for a specific commodity from environment."""
-    env_key = f"{commodity.upper()}_TRADE_MONTHS"
-    raw = os.getenv(env_key, None)
-    if raw:
-        return [int(m.strip()) for m in raw.split(',')]
-    return GROWING_SEASON_MONTHS
-
-
-# Commodities — now driven by .env
-PHASE_1_COMMODITIES = [
-    c.strip().lower()
-    for c in os.getenv('COMMODITIES', 'corn,soybeans').split(',')
-]
-
-VOL_REGIME_THRESHOLD = float(os.getenv('VOL_REGIME_THRESHOLD', 0.45))
->>>>>>> be3033f6e43f86a6455c13948f714e91c8606a8b
