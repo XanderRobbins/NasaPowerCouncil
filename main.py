@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from backtest.engine import run_backtest
 from backtest.metrics import compute_metrics_by_commodity, print_metrics_by_commodity
-from backtest.visualizer import plot_backtest_results
+from backtest.matplotlib_visualizer import plot_backtest_results
 from backtest.quantstats_report import generate_quantstats_report
 from config.settings import (
     BACKTEST_START_DATE,
@@ -70,14 +70,12 @@ def main():
         results.to_csv(results_file, index=False)
         logger.info(f"✓ Results saved to {results_file}")
 
-        # Create visualizations (filtered to trade months)
+        # Create visualizations
         logger.info("\n📈 Creating visualizations...")
-        plot_file = RESULTS_PATH / 'backtest_plot.html'
+        plot_file = RESULTS_PATH / 'backtest_plot.png'
         trade_months = COMMODITY_TRADE_MONTHS[PHASE_1_COMMODITIES[0]] if PHASE_1_COMMODITIES else None
-        # Get first commodity metrics for display
-        display_metrics = metrics_by_commodity.get(PHASE_1_COMMODITIES[0], {}) if PHASE_1_COMMODITIES else {}
         plot_backtest_results(results, PHASE_1_COMMODITIES, save_path=str(plot_file),
-                            trade_months=trade_months, metrics=display_metrics)
+                            trade_months=trade_months)
         logger.info(f"✓ Plot saved to {plot_file}")
 
         logger.info("\n" + "=" * 80)
