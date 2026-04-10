@@ -15,7 +15,10 @@ from config.settings import (
     INITIAL_CAPITAL,
     LOG_PATH,
     RESULTS_PATH,
-    COMMODITY_TRADE_MONTHS
+    COMMODITY_TRADE_MONTHS,
+    MODEL_TYPE,
+    USE_PCA,
+    PCA_N_COMPONENTS,
 )
 
 def setup_logging():
@@ -42,6 +45,7 @@ def main():
     logger.info(f"Backtest Period: {BACKTEST_START_DATE} to {BACKTEST_END_DATE}")
     logger.info(f"Commodities: {PHASE_1_COMMODITIES}")
     logger.info(f"Initial Capital: ${INITIAL_CAPITAL:,.0f}")
+    logger.info(f"Model: {MODEL_TYPE}  |  PCA: {USE_PCA} (n_components={PCA_N_COMPONENTS})")
     logger.info("=" * 80)
 
     try:
@@ -77,6 +81,14 @@ def main():
         plot_backtest_results(results, PHASE_1_COMMODITIES, save_path=str(plot_file),
                             trade_months=trade_months)
         logger.info(f"✓ Plot saved to {plot_file}")
+
+        # Generate QuantStats HTML tearsheet
+        tearsheet_file = RESULTS_PATH / 'quantstats_report.html'
+        generate_quantstats_report(
+            results,
+            output_path=str(tearsheet_file),
+            commodities=PHASE_1_COMMODITIES
+        )
 
         logger.info("\n" + "=" * 80)
         logger.info("✅ BACKTEST COMPLETE")

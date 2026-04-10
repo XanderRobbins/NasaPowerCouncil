@@ -10,6 +10,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 from data.climate_fetcher import NASAPowerFetcher
 from data.market_fetcher import MarketDataFetcher
@@ -27,8 +28,29 @@ from config.settings import (
     MAX_SINGLE_POSITION,
     TRAIN_WINDOW_YEARS,
     COMMODITY_TRADE_MONTHS,
-    COMMODITY_VOL_THRESHOLDS
+    COMMODITY_VOL_THRESHOLDS,
+    USE_PCA,
+    PCA_N_COMPONENTS,
+    MODEL_TYPE,
 )
+
+
+def _build_regression_model():
+    """Factory: return a fresh regression model according to MODEL_TYPE.
+
+    Both classes expose the same surface (compute_target, prepare_features,
+    .model.fit, .model.predict, feature_names) so the engine does not need
+    to branch on model type anywhere else.
+    """
+    if MODEL_TYPE == 'xgboost':
+        from models.xgboost_model import XGBoostRegressionModel
+        return XGBoostRegressionModel()
+    elif MODEL_TYPE == 'ridge':
+        return RollingRidgeModel()
+    else:
+        raise ValueError(
+            f"Unknown MODEL_TYPE={MODEL_TYPE!r}. Expected 'ridge' or 'xgboost'."
+        )
 
 
 class BacktestEngine:
@@ -406,7 +428,7 @@ class BacktestEngine:
         cache_key = f"{commodity}_{current_date.year}_{current_date.month}"
 
         if cache_key in self.model_cache:
-            ridge_model, clf_model, scaler, selected_features = self.model_cache[cache_key]
+            ridge_model, clf_model, scaler, pca, selected_features = self.model_cache[cache_key]
 
             X = features[selected_features].fillna(0).values
             if len(X) == 0:
@@ -414,13 +436,15 @@ class BacktestEngine:
 
             X_test = X[-1:]
             X_test_scaled = scaler.transform(X_test)
+            if pca is not None:
+                X_test_scaled = pca.transform(X_test_scaled)
 
             ridge_prediction = ridge_model.model.predict(X_test_scaled)[0]
             clf_direction = clf_model.model.predict(X_test_scaled)[0]
 
         else:
-            # --- Train Ridge model ---
-            ridge_model = RollingRidgeModel()
+            # --- Train regression model (Ridge or XGBoost, per MODEL_TYPE) ---
+            ridge_model = _build_regression_model()
             y = ridge_model.compute_target(prices).values
             y_series = pd.Series(y, index=range(len(y)))
 
@@ -450,6 +474,26 @@ class BacktestEngine:
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
 
+            # --- Optional PCA dimensionality reduction ---
+            # Trees (xgboost) don't benefit from PCA — orthogonal projection
+            # destroys axis-aligned splits — so PCA is gated to non-tree models.
+            pca = None
+            if USE_PCA and MODEL_TYPE != 'xgboost':
+                # PCA_N_COMPONENTS may be an int (fixed count) or a float in (0,1)
+                # (variance threshold). Clamp int values to feasible range.
+                if isinstance(PCA_N_COMPONENTS, int):
+                    n_comp = min(PCA_N_COMPONENTS, X_train_scaled.shape[1], X_train_scaled.shape[0])
+                else:
+                    n_comp = PCA_N_COMPONENTS  # float → variance threshold
+                pca = PCA(n_components=n_comp)
+                X_train_scaled = pca.fit_transform(X_train_scaled)
+                X_test_scaled = pca.transform(X_test_scaled)
+                logger.debug(
+                    f"PCA ({commodity} {current_date.date()}): "
+                    f"{pca.n_components_} components, "
+                    f"explained={pca.explained_variance_ratio_.sum():.3f}"
+                )
+
             ridge_model.model.fit(X_train_scaled, y_train)
             ridge_prediction = ridge_model.model.predict(X_test_scaled)[0]
 
@@ -464,8 +508,8 @@ class BacktestEngine:
                 clf_model.model.fit(X_train_scaled, y_binary)
                 clf_direction = clf_model.model.predict(X_test_scaled)[0]
 
-            # Cache ridge, classifier, scaler, and feature names
-            self.model_cache[cache_key] = (ridge_model, clf_model, scaler, feature_names)
+            # Cache ridge, classifier, scaler, pca, and feature names
+            self.model_cache[cache_key] = (ridge_model, clf_model, scaler, pca, feature_names)
 
         # --- Classifier confirmation filter ---
         # Only trade when ridge magnitude and classifier direction agree

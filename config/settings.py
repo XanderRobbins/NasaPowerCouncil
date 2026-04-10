@@ -33,6 +33,20 @@ FORWARD_RETURN_DAYS = int(os.getenv('FORWARD_RETURN_DAYS', 10))
 MAX_FEATURES = int(os.getenv('MAX_FEATURES', 15))
 RIDGE_ALPHA = float(os.getenv('RIDGE_ALPHA', 1.0))
 
+# PCA dimensionality reduction (applied after scaling, before the regressor).
+# PCA_N_COMPONENTS accepts either:
+#   - an integer (e.g. "2")       → keep exactly that many principal components
+#   - a float in (0, 1) (e.g. "0.95") → keep enough components to retain that
+#                                        fraction of the variance
+# Default is 0.95, which is data-driven and adapts to the selected feature set.
+USE_PCA = os.getenv('USE_PCA', 'true').lower() == 'true'
+_pca_raw = os.getenv('PCA_N_COMPONENTS', '0.95')
+PCA_N_COMPONENTS = float(_pca_raw) if '.' in _pca_raw else int(_pca_raw)
+
+# Regression model used for forward-return prediction.
+# Supported values: 'ridge' (default) | 'xgboost'
+MODEL_TYPE = os.getenv('MODEL_TYPE', 'ridge').lower()
+
 # Risk Management
 TARGET_PORTFOLIO_VOL = float(os.getenv('TARGET_PORTFOLIO_VOL', 0.99))
 MAX_SINGLE_POSITION = float(os.getenv('MAX_SINGLE_POSITION', 1.0))
