@@ -32,6 +32,7 @@ from config.settings import (
     USE_PCA,
     PCA_N_COMPONENTS,
     MODEL_TYPE,
+    TRANSACTION_COST_BPS,
 )
 
 
@@ -228,6 +229,7 @@ class BacktestEngine:
 
             # --- Per-commodity growing season filter ---
             active_commodities = []
+            season_ended_positions = {}  # Track positions closed due to season ending
 
             for commodity in self.commodities:
                 trade_months = COMMODITY_TRADE_MONTHS.get(commodity, [])
@@ -240,6 +242,7 @@ class BacktestEngine:
                             f"{commodity} season ended at {current_date.date()} "
                             f"— closing position."
                         )
+                        season_ended_positions[commodity] = self.positions[commodity]
                         self.positions[commodity] = 0.0
                         self.entry_prices[commodity] = 0.0
                         self.was_in_growing_season[commodity] = False
@@ -253,6 +256,7 @@ class BacktestEngine:
                     'date': current_date,
                     'portfolio_value': self.portfolio_value,
                     'daily_pnl': 0.0,
+                    'transaction_costs': 0.0,
                     'portfolio_return': 0.0,
                     **{f'{c}_signal': 0.0 for c in self.commodities},
                     **{f'{c}_position': 0.0 for c in self.commodities}
@@ -317,6 +321,7 @@ class BacktestEngine:
                     'date': current_date,
                     'portfolio_value': self.portfolio_value,
                     'daily_pnl': 0.0,
+                    'transaction_costs': 0.0,
                     'portfolio_return': 0.0,
                     **{f'{c}_signal': 0.0 for c in self.commodities},
                     **{f'{c}_position': self.positions.get(c, 0) for c in self.commodities}
@@ -345,6 +350,14 @@ class BacktestEngine:
 
             # --- P&L calculation ---
             daily_pnl = 0.0
+            transaction_costs = 0.0
+
+            # Apply transaction costs for positions closed due to season ending
+            for commodity, closed_position in season_ended_positions.items():
+                position_change = abs(closed_position)
+                if position_change > 1e-6:
+                    cost = self.portfolio_value * position_change * (TRANSACTION_COST_BPS / 10000.0)
+                    transaction_costs += cost
 
             for commodity in self.commodities:
                 if commodity not in positions:
@@ -373,6 +386,13 @@ class BacktestEngine:
                     pnl = self.portfolio_value * old_position * daily_return
                     daily_pnl += pnl
 
+                # --- Transaction cost on position change ---
+                position_change = abs(new_position - old_position)
+                if position_change > 1e-6:
+                    # Cost = portfolio_value * position_change * (bps / 10000)
+                    cost = self.portfolio_value * position_change * (TRANSACTION_COST_BPS / 10000.0)
+                    transaction_costs += cost
+
                 # Record entry price when position opens (transitions from ~0 to non-0)
                 if abs(old_position) < 1e-6 and abs(new_position) > 1e-6:
                     self.entry_price_at_open[commodity] = current_price
@@ -391,13 +411,14 @@ class BacktestEngine:
                 if (self.portfolio_value - daily_pnl) > 0
                 else self.portfolio_value
             )
-            self.portfolio_value += daily_pnl
-            portfolio_return = daily_pnl / prev_value if prev_value > 0 else 0.0
+            self.portfolio_value += daily_pnl - transaction_costs
+            portfolio_return = (daily_pnl - transaction_costs) / prev_value if prev_value > 0 else 0.0
 
             results.append({
                 'date': current_date,
                 'portfolio_value': self.portfolio_value,
                 'daily_pnl': daily_pnl,
+                'transaction_costs': transaction_costs,
                 'portfolio_return': portfolio_return,
                 **{f'{c}_signal': commodity_signals.get(c, 0) for c in self.commodities},
                 **{f'{c}_position': positions.get(c, 0) for c in self.commodities}
