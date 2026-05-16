@@ -41,8 +41,7 @@ def compute_stress_indicators(df: pd.DataFrame, commodity: str) -> pd.DataFrame:
             df['cold_stress_z'] = df['temp_min_z'].clip(upper=0).abs()  # Absolute value of negative deviations
     
     # Dry stress (precipitation below threshold)
-    # FIX: Handle both possible threshold key names
-    dry_threshold = thresholds.get('precip_threshold_dry', 25)  # Default to 25mm if not found
+    dry_threshold = thresholds.get('precip_threshold_dry', 25)
     
     if 'precipitation' in df.columns:
         # Compute weekly cumulative precipitation

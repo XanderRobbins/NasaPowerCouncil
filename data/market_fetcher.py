@@ -15,23 +15,14 @@ from data.cache_manager import cache_manager
 class MarketDataFetcher:
     """
     Fetch futures price data using Yahoo Finance.
-    
+
     Yahoo Finance is free and has good coverage of commodity futures.
-    No API key needed!
-    
-    IMPORTANT: This fetcher requires real market data. If Yahoo Finance
-    fails, the system will raise an error rather than using synthetic data.
+    No API key needed. Raises on failure rather than falling back to
+    synthetic data.
     """
     
     # Yahoo Finance ticker mappings
     YAHOO_TICKERS = {
-        'corn': 'ZC=F',
-        'soybeans': 'ZS=F',
-        'wheat': 'ZW=F',
-        'coffee': 'KC=F',
-        'sugar': 'SB=F',
-        'cotton': 'CT=F',
-        'natural_gas': 'NG=F',
         'corn': 'ZC=F',
         'soybeans': 'ZS=F',
         'wheat': 'ZW=F',
@@ -124,10 +115,8 @@ class MarketDataFetcher:
             # Check if data was returned
             if df is None or df.empty:
                 raise RuntimeError(
-                    f"No data returned from Yahoo Finance for {ticker_symbol}. "
-                    f"Date range: {start_date} to {end_date}. "
-                    f"This could be due to: (1) network issues, (2) Yahoo Finance API changes, "
-                    f"(3) invalid date range, or (4) ticker symbol issues."
+                    f"No data returned from Yahoo Finance for {ticker_symbol} "
+                    f"({start_date} to {end_date})"
                 )
             
             # Standardize column names

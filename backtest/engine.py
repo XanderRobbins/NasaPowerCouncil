@@ -85,7 +85,6 @@ class BacktestEngine:
         self.entry_price_at_open = {c: 0.0 for c in commodities}  # Track true entry price for stop loss
         self.portfolio_value = initial_capital
 
-        # FIX: prediction_history moved here from lazy init in _generate_signal_for_date
         self.prediction_history: Dict[str, list] = {}
 
         # Per-commodity season tracking
@@ -332,7 +331,6 @@ class BacktestEngine:
             positions = {}
             for commodity, signal in commodity_signals.items():
                 if STRATEGY_MODE == 'directional':
-                    # FIX: raised threshold to 1.0 — only trade high-conviction signals
                     if abs(signal) >= MIN_SIGNAL_STRENGTH:
                         positions[commodity] = np.sign(signal) * FIXED_POSITION_SIZE
                     else:
@@ -438,9 +436,6 @@ class BacktestEngine:
                                    current_date: pd.Timestamp) -> float:
         """
         Generate signal for a specific date.
-
-        FIX: Classifier used as direction confirmation filter.
-        FIX: prediction_history initialized in __init__, not here.
 
         Returns:
             Z-scored signal, capped at ±3.0

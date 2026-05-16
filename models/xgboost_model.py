@@ -77,11 +77,10 @@ class XGBoostRegressionModel:
 
     def prepare_features(self, df: pd.DataFrame,
                          target: pd.Series = None) -> Tuple[np.ndarray, List[str]]:
-        # Primary: aggregated rolling stress features
+        # Prefer aggregated rolling stress features; fall back progressively
         feature_cols = [col for col in df.columns
                         if '_agg' in col and any(x in col for x in ['_7d', '_14d', '_30d'])]
 
-        # Fallback 1: any aggregated feature at all
         if len(feature_cols) == 0:
             feature_cols = [col for col in df.columns if '_agg' in col]
             if feature_cols:
@@ -90,7 +89,6 @@ class XGBoostRegressionModel:
                     f"({len(feature_cols)} found): {feature_cols[:5]}"
                 )
 
-        # Fallback 2: any numeric column
         if len(feature_cols) == 0:
             feature_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             feature_cols = [col for col in feature_cols

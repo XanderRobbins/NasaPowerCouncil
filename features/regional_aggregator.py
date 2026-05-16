@@ -73,10 +73,9 @@ def aggregate_regional_features(commodity: str,
         else:
             aggregated[f'{col}_agg'] = 0.0
     
-    # Forward fill missing values (FIXED for pandas 2.0+)
     for col in aggregated.columns:
         if col != 'date':
-            aggregated[col] = aggregated[col].ffill().fillna(0)  # Changed from fillna(method='ffill')
+            aggregated[col] = aggregated[col].ffill().fillna(0)
     
     logger.info(f"Aggregated features shape: {aggregated.shape}")
     

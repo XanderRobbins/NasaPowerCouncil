@@ -1,7 +1,6 @@
 """
 Compute seasonal deviations (Z-scores) from historical baseline.
-NO look-ahead bias: baseline uses only data prior to each observation.
-OPTIMIZED: Fully vectorized groupby expanding window — no row iteration.
+No look-ahead bias: baseline uses only data prior to each observation.
 """
 import pandas as pd
 import numpy as np
@@ -14,9 +13,8 @@ def compute_seasonal_deviations(df: pd.DataFrame,
     Compute Z-scores for weather variables relative to seasonal baseline.
     Z-score = (X_t - μ_season) / σ_season
 
-    OPTIMIZED: Replaces O(n²) iterrows loop with vectorized groupby
-    expanding window. For each calendar day group, we compute the
-    expanding mean/std shifted by 1 year to ensure strict no look-ahead.
+    For each calendar day group, expanding mean/std is shifted by 1 year
+    to ensure strict no look-ahead.
 
     Args:
         df: DataFrame with date, temp_max, temp_min, precipitation, etc.
@@ -48,8 +46,6 @@ def compute_seasonal_deviations(df: pd.DataFrame,
         global_mean = df[var].mean()
         global_std = df[var].std() if df[var].std() > 0 else 1.0
 
-        # Vectorized: within each calendar-day group (already sorted by date/year),
-        # expanding().mean/std gives cumulative stats; shift(1) excludes current year
         grp = df.groupby('month_day', sort=False)[var]
         seas_mean = grp.transform(lambda x: x.expanding().mean().shift(1)).fillna(global_mean)
         seas_std  = grp.transform(lambda x: x.expanding().std().shift(1)).fillna(global_std)
@@ -60,9 +56,6 @@ def compute_seasonal_deviations(df: pd.DataFrame,
     # Clean up helper columns
     df = df.drop(columns=['month_day', 'year', '_orig_idx'])
 
-    logger.debug(
-        f"Computed seasonal deviations (vectorized, no look-ahead) "
-        f"for {len(variables)} variables"
-    )
+    logger.debug(f"Computed seasonal deviations for {len(variables)} variables")
 
     return df

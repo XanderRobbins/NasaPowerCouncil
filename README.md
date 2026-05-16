@@ -282,23 +282,16 @@ NasaPowerCouncil/
 
 ## Roadmap
 
-| Phase | Focus |
-|---|---|
-| **Phase 2** | Extend to coffee, natural gas, wheat, and cotton with commodity-specific calendars and thresholds |
-| **Phase 3** | Explore gradient boosting and ensemble methods with modern regularization techniques |
-| **Phase 4** | Live trading via Interactive Brokers API with real-time data pipelines and position monitoring |
-| **Phase 5** | Options strategies — trade implied volatility using weather forecast regimes |
+- Extend to coffee, natural gas, wheat, and cotton with commodity-specific calendars and thresholds
+- Explore gradient boosting and ensemble methods with modern regularization techniques
+- Live trading via Interactive Brokers API with real-time data pipelines and position monitoring
+- Options strategies — trade implied volatility using weather forecast regimes
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Please follow these conventions:
-
-1. Fork the repository and create a feature branch (`git checkout -b feature/your-feature`)
-2. Write tests for new functionality
-3. Ensure all tests pass (`pytest`)
-4. Submit a pull request with a clear description of motivation and approach
+Fork the repository, create a feature branch, write tests, and submit a pull request with a clear description of the change and motivation. Run `pytest` before opening the PR.
 
 ---
 
