@@ -1,113 +1,51 @@
 """
-Orchestrate the full feature engineering pipeline.
+Raw weather -> model features for one commodity.
+
+Steps, per region and then across regions:
+
+1. seasonal z-scores         (``seasonal_deviation``)  how unusual is today for this date?
+2. stress indicators         (``stress_calculator``)   heat / cold / dry, plus 7/14/30-day sums
+3. production-weighted mean  (``regional_aggregator``) one commodity-level feature table
 """
-import pandas as pd
-from typing import Dict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Dict
+
+import pandas as pd
 from loguru import logger
 
+from features.regional_aggregator import aggregate_regional_features
 from features.seasonal_deviation import compute_seasonal_deviations
 from features.stress_calculator import compute_stress_indicators
-from features.regional_aggregator import aggregate_regional_features
+
 
 class FeaturePipeline:
-    """
-    Full feature engineering pipeline from raw climate data to aggregated signals.
-    
-    Steps:
-    1. Seasonal deviation (Z-scores relative to historical baseline)
-    2. Stress calculations (heat, cold, dry)
-    3. Regional aggregation (production-weighted)
-    """
-    
+    """Turns a commodity's raw regional weather into its aggregated feature table."""
+
     def __init__(self, commodity: str):
         self.commodity = commodity
-        
-    def process_region(self, df: pd.DataFrame, region: str) -> pd.DataFrame:
-        """
-        Process a single region through the feature pipeline.
-        
-        Args:
-            df: Raw climate data for region
-            region: Region name
-            
-        Returns:
-            Processed DataFrame with all features
-        """
-        logger.info(f"Processing features for {self.commodity} - {region}")
-        
-        # Step 1: Seasonal deviations (Z-scores)
-        df = compute_seasonal_deviations(df)
-        
-        # Step 2: Stress calculations
-        df = compute_stress_indicators(df, self.commodity)
-        
-        logger.debug(f"Generated {len(df.columns)} features for {region}")
-        
-        return df
-    
-    def process_all_regions(self, region_dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """
-        Process all regions for this commodity.
-        
-        Args:
-            region_dfs: Dict mapping region names to raw climate DataFrames
-            
-        Returns:
-            Dict mapping region names to processed DataFrames
-        """
-        processed = {}
 
+    def process_region(self, df: pd.DataFrame, region: str) -> pd.DataFrame:
+        """Seasonal z-scores, then stress indicators, for one region."""
+        logger.info(f"Processing features for {self.commodity} - {region}")
+        df = compute_seasonal_deviations(df)
+        return compute_stress_indicators(df, self.commodity)
+
+    def run(self, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """
+        Args:
+            region_dfs: region name -> raw daily weather frame (as returned by the climate fetcher).
+
+        Returns:
+            Commodity-level DataFrame: ``date`` plus the aggregated ``*_agg`` stress features.
+        """
+        logger.info(f"Running feature pipeline for {self.commodity}")
+
+        # Regions are independent, so process them in parallel.
         with ThreadPoolExecutor() as executor:
             futures = {region: executor.submit(self.process_region, df, region)
                        for region, df in region_dfs.items()}
-            for region, future in futures.items():
-                processed[region] = future.result()
+            processed = {region: future.result() for region, future in futures.items()}
 
-        return processed
-    
-    def aggregate(self, processed_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-        """
-        Aggregate processed regional data into commodity-level signals.
-        
-        Args:
-            processed_dfs: Dict mapping region names to processed DataFrames
-            
-        Returns:
-            Aggregated commodity-level DataFrame
-        """
-        logger.info(f"Aggregating regions for {self.commodity}")
-        
-        aggregated = aggregate_regional_features(self.commodity, processed_dfs)
-        
-        return aggregated
-    
-    def run(self, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-        """
-        Run the full pipeline: raw data → aggregated signals.
-        
-        Args:
-            region_dfs: Dict mapping region names to raw climate DataFrames
-            
-        Returns:
-            Commodity-level DataFrame with aggregated features
-        """
-        logger.info(f"Running feature pipeline for {self.commodity}")
-        
-        # Process each region
-        processed = self.process_all_regions(region_dfs)
-        
-        # Aggregate
-        aggregated = self.aggregate(processed)
-        
+        aggregated = aggregate_regional_features(self.commodity, processed)
         logger.info(f"Feature pipeline complete for {self.commodity}: {aggregated.shape}")
-        
         return aggregated
-
-
-def run_feature_pipeline(commodity: str, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """
-    Convenience function to run the full feature pipeline for a commodity.
-    """
-    pipeline = FeaturePipeline(commodity)
-    return pipeline.run(region_dfs)

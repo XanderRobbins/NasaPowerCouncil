@@ -1,82 +1,61 @@
 """
-Aggregate regional features into commodity-level signals using production weights.
+Combine the per-region stress features into one commodity-level feature set, using
+production weights:
+
+    F_commodity(t) = sum over regions r of  weight_r * F_r(t)
+
+A region with missing data on a day contributes 0 ("no stress") so one region's data hole
+cannot erase the others. Weights are applied as given and are not renormalised.
 """
-import pandas as pd
-import numpy as np
 from typing import Dict
+
+import numpy as np
+import pandas as pd
 from loguru import logger
+
 from config.regions import get_commodity_regions
 
-def aggregate_regional_features(commodity: str, 
-                                region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+# Suffix marking a commodity-level (aggregated) column, e.g. ``heat_stress_7d_agg``.
+# The models select their features by this suffix.
+AGG_SUFFIX = '_agg'
+
+
+def aggregate_regional_features(commodity: str, region_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
-    Aggregate regional features into commodity-level using production weights.
-    
-    Weighted average: F_commodity = Σ(w_i * F_region_i)
-    
     Args:
-        commodity: Commodity name
-        region_dfs: Dict mapping region names to processed feature DataFrames
-        
+        commodity: commodity name (selects the production weights).
+        region_dfs: region name -> frame with ``date`` and the stress columns.
+
     Returns:
-        Aggregated DataFrame with commodity-level features
+        One row per date (union of all regions' dates) with a ``<column>_agg`` column per
+        stress feature (raw weather columns are not aggregated).
     """
     regions = get_commodity_regions(commodity)
-    
-    # Get all dates (union of all regional dates)
+
+    # Union of every region's dates, oldest first.
     all_dates = pd.concat([df[['date']] for df in region_dfs.values()]).drop_duplicates().sort_values('date')
-    
-    # Initialize aggregated DataFrame
     aggregated = all_dates.copy()
-    
-    # Get stress feature columns (only aggregate stress indicators, not raw weather)
+
+    # Aggregate only stress columns, not the raw weather variables.
     stress_cols = []
     for df in region_dfs.values():
-        stress_cols.extend([col for col in df.columns 
-                          if ('stress' in col or 'gdd' in col) and col not in stress_cols])
-    
-    # Remove non-aggregatable columns
-    stress_cols = [col for col in stress_cols if col not in ['date', 'month', 'day', 'region']]
-    
+        stress_cols.extend(c for c in df.columns if 'stress' in c and c not in stress_cols)
     logger.info(f"Aggregating {len(stress_cols)} stress features across {len(region_dfs)} regions")
-    
-    # Aggregate each feature: vectorized weighted sum per region
-    for col in stress_cols:
-        # Build a wide dataframe with all regions for this column at once
-        col_frames = [aggregated[['date']].copy()]
 
+    for col in stress_cols:
+        weighted_sum = np.zeros(len(all_dates))
         for region_name, df in region_dfs.items():
             if col not in df.columns:
                 continue
+            # Align this region to the common dates; days it lacks count as 0 stress.
+            values = all_dates[['date']].merge(df[['date', col]], on='date', how='left')[col]
+            weighted_sum += values.fillna(0).values * regions[region_name]['weight']
+        aggregated[f'{col}{AGG_SUFFIX}'] = weighted_sum
 
-            weight = regions[region_name]['weight']
-            regional_data = df[['date', col]].copy()
-            regional_data.columns = ['date', f'{region_name}_{col}']
-            col_frames.append(regional_data)
-
-        # Merge all at once
-        if len(col_frames) > 1:
-            temp_df = col_frames[0]
-            for rf in col_frames[1:]:
-                temp_df = temp_df.merge(rf, on='date', how='left')
-
-            # Compute weighted sum
-            weighted_cols = [c for c in temp_df.columns if c.endswith(f'_{col}')]
-            agg_values = np.zeros(len(temp_df))
-
-            for col_name in weighted_cols:
-                region_name = col_name.replace(f'_{col}', '')
-                weight = regions[region_name]['weight']
-                agg_values += temp_df[col_name].fillna(0).values * weight
-
-            aggregated[f'{col}_agg'] = agg_values
-        else:
-            aggregated[f'{col}_agg'] = 0.0
-    
+    # Carry the last known value forward over any remaining gaps, and treat a missing start as 0.
     for col in aggregated.columns:
         if col != 'date':
             aggregated[col] = aggregated[col].ffill().fillna(0)
-    
+
     logger.info(f"Aggregated features shape: {aggregated.shape}")
-    
     return aggregated

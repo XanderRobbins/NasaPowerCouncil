@@ -1,24 +1,27 @@
 """
-Backtest visualization with matplotlib and dark theme.
+Backtest charts (matplotlib, dark theme), saved to a PNG.
+
+Uses the non-interactive ``Agg`` backend so it also works on a server with no display.
 """
-import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('TkAgg')  # Use TkAgg backend for display
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
 from typing import Optional
+
+import matplotlib
+matplotlib.use('Agg')  # file output only; no GUI toolkit needed
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from loguru import logger
 
-# Set dark theme globally
 plt.style.use('dark_background')
-sns.set_palette("bright")
 
 class MatplotlibVisualizer:
     """
-    Create visualizations for backtest results using matplotlib.
-    Dark theme for easy viewing.
+    Builds the six-panel report: equity curve, drawdown, return histogram, rolling Sharpe,
+    signals and positions.
+
+    Every ``plot_*`` method draws onto a given axis (or makes its own) and returns it.
+    ``use_index=True`` plots against row number instead of date, which closes the gaps
+    between seasons when only trade months are shown.
     """
 
     def __init__(self, figsize: tuple = (14, 10)):
@@ -176,7 +179,7 @@ class MatplotlibVisualizer:
         return ax
 
     def create_full_report(self, results: pd.DataFrame, commodities: list,
-                          save_path: Optional[Path] = None,
+                          save_path: Optional[str] = None,
                           trade_months: Optional[list] = None):
         """Create comprehensive backtest report with all plots."""
         # Filter to trade months if specified

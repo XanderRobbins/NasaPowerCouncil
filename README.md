@@ -1,310 +1,137 @@
 # NasaPowerCouncil
 
-> *A quantitative trading system for agricultural commodity futures, driven by satellite-derived climate intelligence and machine learning.*
+A research backtest for trading agricultural futures on weather. It turns NASA POWER satellite
+weather into crop-stress features, forecasts the next-N-day return with a Ridge regression, and
+simulates trading it walk-forward. Only **corn** is wired up for trading.
 
----
+> **Status: research prototype, not a proven strategy.** See [Results](#results-what-to-expect)
+> for what the tests actually showed.
 
-## Overview
+## The idea
 
-**NasaPowerCouncil** is a systematic trading strategy that leverages NASA POWER climate data to forecast price movements in agricultural commodity futures. The system employs Ridge regression with rolling training windows to uncover relationships between weather stress indicators and forward returns — enabling disciplined, data-driven position taking in corn and soybean markets.
+Heat, cold and dry spells during the growing season hurt crop yields, and the thesis is that the
+market under-prices that early. For each production region the code measures how unusual the
+weather is for the date, counts stress days, accumulates them over 7/14/30 days, and averages the
+regions by production weight. A model learns, on a rolling window, how those stress features
+relate to the following 10-day corn return.
 
-The core thesis is elegant in its simplicity: extreme weather events — droughts, heat waves, cold snaps — materially impact crop yields, and these impacts are often underpriced in futures markets during the growing season. By quantifying weather stress across key production regions and modeling its historical relationship to forward returns, the system attempts to capture this edge systematically and repeatably.
+## How it works
 
----
+```
+NASA POWER weather ─► seasonal z-scores ─► stress flags + 7/14/30-day sums ─► production-weighted
+(per region)           "unusual for this    heat / cold / dry, per region      average over regions
+                        calendar day?"                                                │
+Yahoo futures prices ───────────────────────────────────────────────────────────────┤
+                                                                                      ▼
+   each in-season day: (monthly refit) top-k features → scale → PCA → Ridge  (+ logistic classifier)
+        forecast → z-score vs last 60 forecasts → classifier veto → cap ±3 → volatility filter
+                  → target position → (trade at next close) → costs, stop-loss, mark-to-market
+```
 
-## Motivation
+Key rules:
 
-Traditional commodity trading relies heavily on fundamental analysis — crop reports, export data, inventory levels — which are inherently backward-looking and subject to revision. Weather derivatives and insurance products exist but are often illiquid and expensive. NasaPowerCouncil offers a third path: using freely available, high-quality satellite data to generate forward-looking signals in liquid futures markets.
+* **No look-ahead.** Seasonal baselines use only earlier years; a model trained on day *t* only
+  uses rows whose N-day outcome is already known; weather features are delayed by
+  `FEATURE_LAG_DAYS` (NASA POWER publishes 1–2+ days late) and decisions are traded at the next
+  close (`EXECUTE_NEXT_BAR`).
+* **Seasonal.** Corn is traded April–June (`CORN_TRADE_MONTHS`) and the account is in cash otherwise.
+* **Monthly refits** on a rolling 3-year window.
+* **Risk controls.** 5% stop-loss per position, a volatility filter (flat when 20-day vol > 30%),
+  10 bps cost per unit of position change.
 
-NASA's **POWER** (Prediction Of Worldwide Energy Resources) project provides validated, gap-filled climate data at daily resolution for any point on Earth — including temperature extremes, precipitation, solar radiation, and humidity, all critical inputs for crop stress modeling. By aggregating this data across production-weighted regions and training statistical models on historical price behavior, the system systematically identifies periods when weather stress creates tradeable dislocations.
+## Results: what to expect
 
----
+Corn, 10 bps costs, 0.5× position, April–June, with the 2-day weather lag and next-bar execution.
+"In-season Sharpe" is mean/std of daily returns on April–June days × √252.
 
-## Key Features
+| Period | Price series | In-season Sharpe | Return per season |
+|---|---|---|---|
+| 2013–2022 | `ZC=F` (raw) | ≈ 1.4 | ≈ 3.6% |
+| 2013–2022 | `ZC=F` (roll-neutralised) | ≈ 1.1–1.2 | ≈ 2.9% |
+| 2013–2022 | Teucrium CORN ETF (no roll gaps) | ≈ 1.4 | ≈ 3.3% |
+| 2003–2022 | `ZC=F` (raw) | ≈ 0.9 | ≈ 2.3% |
 
-### Data Infrastructure
+Read these carefully:
 
-| Module | Description |
-|---|---|
-| `climate_fetcher.py` | Automated fetching of daily NASA POWER climate data for major production regions |
-| `market_fetcher.py` | Continuous front-month futures pricing via Yahoo Finance — no API costs |
-| `cot_fetcher.py` | CFTC Commitments of Traders data for positioning and sentiment context |
-| `cache_manager.py` | Intelligent local persistence layer to minimize redundant API calls |
+* **The uncertainty is large.** With 10–19 seasons, 95% intervals on the Sharpe run from about
+  zero to about 2.5.
+* **The 2013–2022 window is partly in-sample**, and ~a dozen variants were tried on it.
+  The 19-season figure is the more honest one.
+* **Results move a lot with small changes** (timing assumptions, roll handling, which bug fixes
+  are on): total return swung by 10–20 points. Do not trust a single number.
+* **The edge looks like timing, not just being long corn**: buy-and-hold over the same days scored
+  about 0.5–0.6 (futures) and about −0.1 (ETF), and the strategy is roughly half long, half short.
+* The Sharpe printed by `main.py` (in-season CAGR ÷ volatility of active days) is a different,
+  slightly lower, formula; see `backtest/metrics.py`.
+* Earlier versions of this project reported much better numbers. Those came from same-day
+  execution, bugs that flattered results (label-misaligned feature selection, an inverted short
+  stop-loss, a future-data leak in the z-scores) and an optimistic short window; they are fixed.
 
-### Feature Engineering
+## Limitations
 
-- **Seasonal Deviation Analysis** — Z-score normalization against historical baselines
-- **Weather Stress Indicators** — Commodity-specific heat, cold, and drought thresholds (`thresholds.py`)
-- **Multi-Timeframe Aggregation** — Rolling 7-day, 14-day, and 30-day cumulative stress windows
-- **Production Weighting** — Regional aggregation using actual production volumes (`regions.py`)
-- **Growing Season Calendars** — Stage-specific sensitivity weights for pollination, grain fill, and other critical phenological periods (`calendars.py`)
+* **Roll gaps.** Yahoo's `ZC=F` is not back-adjusted. On contract-roll days the price jumps by the
+  calendar spread, and a backtest holding through it books that as profit. Treat raw-futures results
+  as optimistic; prefer a back-adjusted series.
+* **Costs.** 10 bps per unit of position change is probably light for real corn execution; shorting an
+  ETF would add borrow costs.
+* **Sample size.** Weather-to-price relationships are estimated from ~10–20 seasons.
+* **Stationarity.** Climate, technology and trade patterns change; monthly refits only partly help.
+* **Single market.** Only corn is configured for trading.
 
-### Modeling Framework
-
-- **Rolling Ridge Regression** — 10-year training windows with L2 regularization to control overfitting (`ridge_model.py`)
-- **Time Series Cross-Validation** — Proper temporal splits that strictly prevent look-ahead bias
-- **Dynamic Beta Estimation** — Kalman filtering allows weather sensitivity to evolve with market regimes (`kalman_beta.py`)
-- **Feature Selection** — Variance-based filtering limits each model to its most informative signals
-
-### Backtesting Engine
-
-- **Walk-Forward Simulation** — Strict point-in-time data access with monthly model retraining
-- **Transaction Cost Modeling** — Configurable slippage and commission assumptions
-- **Risk Management** — Position sizing via volatility normalization and drawdown limits
-- **Performance Attribution** — Sharpe, Sortino, Calmar, hit rate, and profit factor reporting
-
----
-
-## Installation
-
-### Prerequisites
-
-- Python 3.9 or higher
-- A virtual environment (strongly recommended)
-
-### Setup
+## Quick start
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/NasaPowerCouncil.git
-cd NasaPowerCouncil
-
-# Create and activate a virtual environment
-python -m venv venv
-
-# macOS / Linux
-source venv/bin/activate
-
-# Windows
-.\venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install in development mode
-pip install -e .
+pip install -r requirements.txt     # add quantstats for the HTML tearsheet, xgboost for MODEL_TYPE=xgboost
+cp .env.example .env                # optional: every setting has a default
+python main.py                      # fetch -> features -> backtest -> metrics, chart, CSV, tearsheet
 ```
 
-### Configuration
+Outputs go to `data_storage/results/` (`backtest_results.csv`, `backtest_plot.png`, and
+`quantstats_report.html` if quantstats is installed). Downloads are cached in `data_storage/raw/`.
 
-```bash
-cp .env.example .env
-```
+Settings are environment variables (or a `.env` file); `.env.example` lists all of them with their
+defaults. `python sweep.py` re-runs the backtest while varying one setting at a time, to show how
+sensitive the result is (not to pick parameters: it is in-sample).
 
-Edit `.env` to configure strategy parameters:
+To reproduce the older, optimistic behaviour for comparison:
+`FEATURE_LAG_DAYS=0 EXECUTE_NEXT_BAR=false python main.py`.
 
-```bash
-# Strategy Settings
-STRATEGY_MODE=directional          # 'directional' or 'magnitude'
-MIN_SIGNAL_STRENGTH=0.3            # Minimum signal threshold
-FIXED_POSITION_SIZE=0.05           # Position size as fraction of portfolio
-ONLY_TRADE_GROWING_SEASON=true    # Restrict trading to April–September
-
-# Model Parameters
-TRAIN_WINDOW_YEARS=5               # Rolling training window
-FORWARD_RETURN_DAYS=10             # Prediction horizon
-MAX_FEATURES=15                    # Feature selection limit
-
-# Risk Management
-TARGET_PORTFOLIO_VOL=0.12          # Target annualized volatility
-MAX_SINGLE_POSITION=0.20           # Maximum position size
-```
-
----
-
-## Usage
-
-### Running a Backtest
-
-```python
-from backtest.engine import run_backtest
-from backtest.metrics import compute_metrics, print_metrics
-
-results = run_backtest(
-    start_date='2015-01-01',
-    end_date='2025-01-01',
-    commodities=['corn', 'soybeans'],
-    initial_capital=1_000_000
-)
-
-metrics = compute_metrics(results)
-print_metrics(metrics)
-
-results.to_csv('backtest_results.csv', index=False)
-```
-
-### Training Models Independently
-
-```python
-from models.ridge_model import train_ridge_model
-from features.feature_pipeline import run_feature_pipeline
-from data.climate_fetcher import fetch_commodity_regions
-from data.market_fetcher import fetch_market_data
-from sklearn.metrics import r2_score
-
-climate_data = fetch_commodity_regions('corn', '2010-01-01', '2025-01-01')
-market_data  = fetch_market_data('corn', 'ZC=F', '2010-01-01', '2025-01-01')
-
-features = run_feature_pipeline('corn', climate_data)
-
-model, predictions, actuals, dates = train_ridge_model(
-    features,
-    market_data['close'],
-    'corn'
-)
-
-print(f"Model R²: {r2_score(actuals, predictions):.4f}")
-```
-
-### Command Line
-
-```bash
-python main.py
-```
-
-Results are saved to `data_storage/results/`, including CSV output and performance visualizations.
-
----
-
-## Methodology
-
-### Weather Stress Quantification
-
-The system quantifies three distinct forms of crop stress:
-
-**Heat Stress** — Days where maximum temperature exceeds critical thresholds (32°C for corn, 35°C for soybeans). Cumulative heat stress is particularly destructive during pollination, when pollen viability collapses above these levels.
-
-**Cold Stress** — Days where minimum temperature falls below emergence thresholds (10°C for corn, 15°C for soybeans). Early-season cold can delay stand establishment and reduce final yield potential.
-
-**Drought Stress** — Weekly cumulative precipitation below critical thresholds (25mm for corn, 30mm for soybeans). Water deficit during vegetative growth and grain fill directly diminishes yield.
-
-These binary indicators are aggregated into rolling cumulative measures across 7-day, 14-day, and 30-day windows, then production-weighted across major growing regions (`regions.py`).
-
-### Prediction Model
-
-A Ridge regression model predicts forward returns as a linear function of current weather stress:
+## Project structure
 
 ```
-Y_t = β₀ + β₁·HeatStress₇d + β₂·ColdStress₁₄d + ... + ε_t
+main.py                        entry point: run, print metrics, write outputs
+sweep.py                       one-at-a-time parameter sensitivity (in-sample!)
+config/
+  settings.py                  all settings and defaults (env-overridable)
+  regions.py                   production regions: lat/lon and weights per commodity
+  thresholds.py                heat / cold / dry thresholds per commodity
+data/
+  climate_fetcher.py           NASA POWER client, cached; rejects bad rainfall units
+  market_fetcher.py            Yahoo Finance futures prices, cached for a day
+  cache_manager.py             pickle cache with a time-to-live
+features/
+  seasonal_deviation.py        z-score of the weather vs the same date in earlier years
+  stress_calculator.py         heat/cold/dry flags and 7/14/30-day sums
+  regional_aggregator.py       production-weighted average over regions
+  feature_pipeline.py          chains the three steps
+models/
+  common.py                    forward-return target and feature selection (shared)
+  ridge_model.py               Ridge wrapper (default)
+  xgboost_model.py             optional XGBoost wrapper
+  classifier_model.py          logistic regression used as a veto
+backtest/
+  engine.py                    the walk-forward simulation
+  metrics.py                   in-season performance metrics
+  plots.py                     six-panel chart
+  quantstats_report.py         optional HTML tearsheet
 ```
 
-Where `Y_t` is the N-day forward return, features are production-weighted stress indicators, and coefficients are estimated via L2-regularized regression on a rolling 5–10 year training window. Models are retrained monthly to adapt to gradual regime shifts.
+## Data sources
 
-The model is intentionally parsimonious. Complex architectures — neural networks, gradient boosting — tend to overfit severely given the limited sample size of 15–20 growing seasons. Ridge regression offers a favorable bias-variance tradeoff and produces interpretable coefficients that can be examined and challenged.
+* **NASA POWER** daily point weather (free, rate limited; published with a 1–2+ day delay).
+* **Yahoo Finance** continuous front-month futures via `yfinance` (unadjusted for rolls, see above).
 
-### Walk-Forward Backtesting
+## Disclaimer
 
-The backtesting engine enforces strict temporal integrity at every step:
-
-1. At each date `t`, use only data available through `t-1`
-2. Train the model on the most recent N years of history
-3. Generate a prediction for date `t`
-4. Size positions based on signal strength and realized volatility
-5. Mark-to-market all positions at date `t` prices
-6. Update portfolio value and advance to `t+1`
-
-This walk-forward discipline eliminates look-ahead bias — a common and often invisible failure mode in commodity strategy research.
-
----
-
-## Performance Characteristics
-
-> Based on testing from 2015–2025 with realistic assumptions (10 bps/trade transaction costs, 5% position sizing, monthly retraining, growing season only).
-
-| Metric | Range |
-|---|---|
-| Annualized Return | 15–20% (after costs) |
-| Sharpe Ratio | 1.2–1.8 |
-| Maximum Drawdown | -30% to -40% |
-| Win Rate | 54–58% |
-| Profit Factor | 1.4–1.8 |
-
-The strategy exhibits elevated drawdowns characteristic of weather-driven dislocation strategies. Severe weather events — droughts especially — tend to persist, creating extended adversarial periods before mean reversion reasserts itself. This profile makes the system unsuitable for low-volatility mandates but potentially compelling for absolute return allocators with appropriate risk tolerance.
-
----
-
-## Project Structure
-
-```
-NasaPowerCouncil/
-├── config/                  # Configuration and settings
-│   ├── settings.py          # Global parameters
-│   ├── regions.py           # Production region definitions
-│   ├── thresholds.py        # Weather stress thresholds
-│   └── calendars.py         # Growing season calendars
-├── data/                    # Data acquisition and caching
-│   ├── climate_fetcher.py   # NASA POWER integration
-│   ├── market_fetcher.py    # Yahoo Finance integration
-│   ├── cot_fetcher.py       # CFTC positioning data
-│   └── cache_manager.py     # Local caching layer
-├── features/                # Feature engineering pipeline
-│   ├── feature_pipeline.py      # Pipeline orchestration
-│   ├── seasonal_deviation.py    # Z-score normalization
-│   ├── stress_calculator.py     # Weather stress indicators
-│   └── regional_aggregator.py  # Production weighting
-├── models/                  # Prediction models
-│   ├── ridge_model.py       # Rolling Ridge regression
-│   └── kalman_beta.py       # Dynamic beta estimation
-├── backtest/                # Backtesting framework
-│   ├── engine.py            # Walk-forward simulation
-│   ├── metrics.py           # Performance calculation
-│   └── visualizer.py        # Results plotting
-├── signals/                 # Signal generation
-│   └── signal_generator.py  # Volatility normalization
-├── utils/                   # Utilities
-│   └── data_validator.py    # Data quality checks
-└── main.py                  # Entry point
-```
-
----
-
-## Data Sources
-
-**NASA POWER** — The POWER project provides satellite-derived climate data at 0.5° × 0.5° global resolution, available from 1981 to near real-time (typically 1–2 day lag). Funded by NASA's Earth Science program and maintained at Langley Research Center. API access is free but rate-limited (~60 requests/minute); the caching layer respects these limits intelligently.
-
-**Yahoo Finance** — Commodity futures data via the `yfinance` Python library. Continuous front-month contracts (e.g., `ZC=F` for corn) are used throughout, avoiding the complexity of manual roll adjustments.
-
-**CFTC Commitments of Traders** — Weekly positioning data providing sentiment context for the modeling and signal generation layers.
-
----
-
-## Limitations & Risks
-
-**Model Risk** — The strategy assumes weather-price relationships are stationary. Climate change, advances in agricultural technology, and evolving trade patterns may gradually erode these relationships. Monthly retraining helps, but structural breaks can cause sustained underperformance before they are detected.
-
-**Execution Risk** — Backtests assume frictionless execution at closing prices. Real-world slippage can be material, particularly during the volatile conditions when weather-driven signals tend to be strongest. The 10 bps cost assumption may prove optimistic at scale.
-
-**Data Risk** — NASA POWER data occasionally contains gaps or anomalies, particularly for recent dates. Validation checks are in place but cannot eliminate all data quality issues.
-
-**Regime Risk** — When markets are dominated by factors orthogonal to weather — currency moves, policy shocks, demand disruptions — weather signals may fail systematically. The strategy has no explicit regime filter and will continue trading through unfavorable environments.
-
----
-
-## Roadmap
-
-- Extend to coffee, natural gas, wheat, and cotton with commodity-specific calendars and thresholds
-- Explore gradient boosting and ensemble methods with modern regularization techniques
-- Live trading via Interactive Brokers API with real-time data pipelines and position monitoring
-- Options strategies — trade implied volatility using weather forecast regimes
-
----
-
-## Contributing
-
-Fork the repository, create a feature branch, write tests, and submit a pull request with a clear description of the change and motivation. Run `pytest` before opening the PR.
-
----
-
-## License
-
-Distributed under the MIT License. See `LICENSE` for details.
-
----
-
-## Acknowledgments
-
-This project draws on data from the **NASA POWER** project (Langley Research Center), the **CFTC** for Commitments of Traders reports, and **Yahoo Finance** for market data. The methodology is informed by academic research in weather derivatives and agricultural commodity pricing.
-
----
-
-> **Disclaimer:** This system is provided for research and educational purposes only. Past performance does not guarantee future results. Trading commodity futures involves substantial risk of loss. Consult a qualified financial advisor before deploying capital.
+For research and education only. Past performance, and especially backtested performance, does not
+guarantee future results. Trading futures involves substantial risk of loss.

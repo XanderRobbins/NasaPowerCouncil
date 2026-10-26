@@ -1,11 +1,12 @@
-# backtest/quantstats_report.py
 """
-Generate QuantStats HTML tearsheet from backtest results.
-Uses full calendar results with idle days zeroed out — honest
-representation of a seasonal strategy that sits in cash off-season.
+QuantStats HTML tearsheet for the backtest results.
+
+QuantStats is an optional dependency (``pip install quantstats``); importing this module
+raises ImportError without it, and ``main.py`` then skips the tearsheet. The returns fed to
+QuantStats cover only days when the strategy held a position, so its Sharpe/CAGR figures
+describe the in-season periods, like the metrics printed to the terminal.
 """
 import pandas as pd
-import numpy as np
 from pathlib import Path
 from typing import Optional, List
 from loguru import logger
@@ -27,7 +28,7 @@ def build_returns_series(results: pd.DataFrame) -> pd.Series:
     per-commodity metrics printed to the terminal.
 
     Args:
-        results: Full (non-compacted) backtest results from engine [2]
+        results: Backtest results from the engine (one row per simulated day)
 
     Returns:
         pd.Series of daily returns indexed by real datetime dates,
@@ -47,7 +48,7 @@ def build_returns_series(results: pd.DataFrame) -> pd.Series:
     # QuantStats chokes on NaN
     returns = returns.fillna(0.0)
 
-    # Drop any duplicate dates (shouldn't happen but defensive)
+    # QuantStats needs a unique date index
     returns = returns[~returns.index.duplicated(keep='first')]
 
     return returns
@@ -64,7 +65,7 @@ def generate_quantstats_report(
     Generate a full QuantStats HTML tearsheet.
 
     Args:
-        results:          Full (non-compacted) backtest results DataFrame [2]
+        results:          Backtest results from the engine (one row per simulated day)
         output_path:      Path to save the HTML file
         benchmark_ticker: Optional ticker for benchmark comparison (e.g. 'DJP' for Bloomberg
                           Commodity Index ETF, or None to skip benchmark)

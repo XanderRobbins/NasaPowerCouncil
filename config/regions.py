@@ -1,4 +1,10 @@
-"""Production region definitions and weights."""
+"""Production regions per commodity: a representative lat/lon and a production weight.
+
+NASA POWER is queried at each point, and the regional stress features are combined with
+``weight`` in ``features/regional_aggregator.py``. The aggregator applies the weights as
+given and does not renormalise them, so they should sum to 1 for the features to be on the
+same scale across commodities (coffee sums to 0.8 because a third region was commented out).
+"""
 
 COMMODITY_REGIONS = {
     'corn': {
@@ -93,9 +99,3 @@ def get_commodity_regions(commodity: str) -> dict:
     if commodity not in COMMODITY_REGIONS:
         raise ValueError(f"Commodity {commodity} not defined")
     return COMMODITY_REGIONS[commodity]
-
-def validate_weights(commodity: str) -> bool:
-    """Ensure weights sum to 1.0."""
-    regions = COMMODITY_REGIONS[commodity]
-    total_weight = sum(r['weight'] for r in regions.values())
-    return abs(total_weight - 1.0) < 0.01

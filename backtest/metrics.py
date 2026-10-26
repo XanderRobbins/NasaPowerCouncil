@@ -1,103 +1,95 @@
 """
-Calculate backtest performance metrics.
+Performance metrics for a seasonal strategy.
+
+The strategy sits in cash outside its growing season, so metrics are computed on the
+*in-season* rows only, and "years" means in-season days / 252. The definitions below are
+deliberately the original ones, so numbers stay comparable between runs:
+
+* annualized_return   CAGR over the in-season years
+* sharpe_ratio        annualized return / annualized volatility of the *active-day* returns
+                      (days with a non-zero return), 0% risk-free. This divides a compounded
+                      return by volatility; a textbook Sharpe divides the mean daily return by
+                      its volatility, so the two differ somewhat.
+* sortino_ratio       annualized return / annualized std of the negative active-day returns
+* max_drawdown        peak-to-trough fall of the equity curve on days when risk was held
+* calmar_ratio        annualized return / |max drawdown|
+
+Because capital would be redeployed outside the season, in-season figures are the relevant
+ones for a sleeve in a portfolio -- but they are also easy to over-read: with ~10 seasons the
+uncertainty around any Sharpe estimate is large.
 """
-import pandas as pd
+from typing import Dict
+
 import numpy as np
-from typing import Dict, List
+import pandas as pd
 from loguru import logger
-from config.settings import GROWING_SEASON_MONTHS
+
+TRADING_DAYS_PER_YEAR = 252
 
 
 def compute_metrics(results: pd.DataFrame, commodity: str = None, trade_months: list = None) -> Dict:
     """
-    Compute comprehensive backtest metrics.
+    Metrics for the rows of ``results`` that fall in ``trade_months`` (all rows if not given).
 
-    Only includes active trading periods (non-zero return days).
-    All metrics are calculated and annualized based on ONLY trading days.
-
-    Args:
-        results: Backtest results DataFrame
-        commodity: Optional commodity name to filter by trade months
-        trade_months: Optional list of trade months (1-12) for the commodity
-
-    Returns:
-        Dict of metrics
+    ``commodity`` is only used for log messages. Returns an empty dict when there is nothing
+    to measure.
     """
     if results.empty or 'portfolio_return' not in results.columns:
         logger.warning("Empty results or missing portfolio_return column")
         return {}
 
-    # Filter to trade months if commodity specified
-    results_filtered = results.copy()
+    frame = results.copy()
     if commodity and trade_months:
-        results_filtered = results[results['date'].dt.month.isin(trade_months)].copy()
-        if results_filtered.empty:
+        frame = results[results['date'].dt.month.isin(trade_months)].copy()
+        if frame.empty:
             logger.warning(f"No results for {commodity} during trade months {trade_months}")
             return {}
 
-    returns = results_filtered['portfolio_return'].dropna()
-
+    returns = frame['portfolio_return'].dropna()
     if len(returns) == 0:
         logger.warning("No valid returns")
         return {}
 
-    # Filter to only active trading days (non-zero returns)
+    # "Active" days are those with a non-zero return (flat days earn exactly 0).
     active_returns = returns[returns != 0]
-
     if len(active_returns) == 0:
         logger.warning("No active trading days found")
         return {}
 
-    # Calculate total return from portfolio value (this captures the actual gains/losses)
-    total_return = (results_filtered['portfolio_value'].iloc[-1] / results_filtered['portfolio_value'].iloc[0]) - 1
+    # Total and annualised return come from the equity curve over the in-season rows.
+    total_return = frame['portfolio_value'].iloc[-1] / frame['portfolio_value'].iloc[0] - 1
+    n_season_years = len(frame) / TRADING_DAYS_PER_YEAR
+    annualized_return = (1 + total_return) ** (1 / n_season_years) - 1 if n_season_years > 0 else 0
 
-    # Annualize over filtered trading days
-    n_active_years = len(results_filtered) / 252
-
-    annualized_return = (1 + total_return) ** (1 / n_active_years) - 1 if n_active_years > 0 else 0
-
-    # Volatility — computed on active returns only (excludes flat periods)
-    daily_vol = active_returns.std()
-    annualized_vol = daily_vol * np.sqrt(252)
-
-    # Sharpe ratio (assume 0% risk-free rate)
+    annualized_vol = active_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
     sharpe = annualized_return / annualized_vol if annualized_vol > 0 else 0
 
-    # Drawdown — computed on active trading periods only
-    # Exclude flat periods (no positions, no returns) to measure risk while actually invested
-    # A position is "active" if any commodity has a non-zero position on that day OR if there's a return
-    position_cols = [c for c in results_filtered.columns if c.endswith('_position')]
-    any_position = (results_filtered[position_cols].abs() > 1e-6).any(axis=1) | (results_filtered['portfolio_return'] != 0)
-
-    active_results = results_filtered[any_position].copy()
-
-    if len(active_results) > 0:
-        portfolio_values = active_results['portfolio_value'].values
-        running_max = np.maximum.accumulate(portfolio_values)
-        drawdown = (portfolio_values - running_max) / running_max
-        max_drawdown = drawdown.min()
+    # Drawdown only over days when the strategy held a position or had a non-zero return.
+    position_cols = [c for c in frame.columns if c.endswith('_position')]
+    risk_on = (frame[position_cols].abs() > 1e-6).any(axis=1) | (frame['portfolio_return'] != 0)
+    equity = frame.loc[risk_on, 'portfolio_value'].values
+    if len(equity) > 0:
+        running_max = np.maximum.accumulate(equity)
+        max_drawdown = ((equity - running_max) / running_max).min()
     else:
         max_drawdown = 0.0
 
-    # Win rate
-    win_rate = (active_returns > 0).mean()
+    wins = active_returns[active_returns > 0]
+    losses = active_returns[active_returns < 0]
 
-    # Profit factor
-    gains = active_returns[active_returns > 0].sum()
-    losses = abs(active_returns[active_returns < 0].sum())
-    profit_factor = gains / losses if losses > 0 else np.inf
+    gains_total, losses_total = wins.sum(), abs(losses.sum())
+    profit_factor = gains_total / losses_total if losses_total > 0 else np.inf
 
-    downside_returns = active_returns[active_returns < 0]
-    downside_std = downside_returns.std() * np.sqrt(252)
+    downside_std = losses.std() * np.sqrt(TRADING_DAYS_PER_YEAR)
     sortino = annualized_return / downside_std if downside_std > 0 else 0
-
     calmar = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
 
-    avg_win = active_returns[active_returns > 0].mean() if (active_returns > 0).any() else 0
-    avg_loss = active_returns[active_returns < 0].mean() if (active_returns < 0).any() else 0
+    avg_win = wins.mean() if len(wins) else 0
+    avg_loss = losses.mean() if len(losses) else 0
     win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else np.inf
 
-    metrics = {
+    logger.info(f"Computed performance metrics{f' for {commodity}' if commodity else ''} (in-season rows)")
+    return {
         'total_return': total_return,
         'annualized_return': annualized_return,
         'annualized_volatility': annualized_vol,
@@ -105,133 +97,55 @@ def compute_metrics(results: pd.DataFrame, commodity: str = None, trade_months: 
         'sortino_ratio': sortino,
         'calmar_ratio': calmar,
         'max_drawdown': max_drawdown,
-        'win_rate': win_rate,
+        'win_rate': (active_returns > 0).mean(),
         'profit_factor': profit_factor,
         'avg_win': avg_win,
         'avg_loss': avg_loss,
         'win_loss_ratio': win_loss_ratio,
         'n_active_days': len(active_returns),
-        'n_active_years': n_active_years,
+        'n_active_years': n_season_years,
     }
-
-    if commodity:
-        logger.info(f"Computed performance metrics for {commodity} (active trading days only)")
-    else:
-        logger.info("Computed performance metrics (active trading days only)")
-
-    return metrics
 
 
 def compute_metrics_by_commodity(results: pd.DataFrame, commodity_trade_months: Dict) -> Dict:
-    """
-    Compute metrics for each commodity during its designated trade months.
-
-    Args:
-        results: Backtest results DataFrame
-        commodity_trade_months: Dict mapping commodity names to lists of trade months
-
-    Returns:
-        Dict with structure: {'commodity_name': {metrics}}
-    """
+    """Metrics per commodity, each over its own trade months: ``{commodity: metrics dict}``."""
     all_metrics = {}
-
     for commodity, trade_months in commodity_trade_months.items():
-        logger.info(f"\nComputing metrics for {commodity} (months {trade_months})...")
-        metrics = compute_metrics(results, commodity=commodity, trade_months=trade_months)
-        all_metrics[commodity] = metrics
-
+        logger.info(f"Computing metrics for {commodity} (months {trade_months})...")
+        all_metrics[commodity] = compute_metrics(results, commodity=commodity, trade_months=trade_months)
     return all_metrics
 
 
 def print_metrics_by_commodity(metrics_by_commodity: Dict):
-    """Pretty print per-commodity metrics."""
+    """Print the metrics table for each commodity."""
     print("\n" + "=" * 60)
-    print("BACKTEST PERFORMANCE METRICS (By Commodity)")
+    print("BACKTEST PERFORMANCE METRICS (By Commodity, in-season rows)")
     print("=" * 60)
 
-    for commodity, metrics in metrics_by_commodity.items():
-        if not metrics:
+    for commodity, m in metrics_by_commodity.items():
+        if not m:
             print(f"\n{commodity.upper()}: No data")
             continue
 
         print(f"\n{commodity.upper()}")
-        print(f"-" * 60)
-
-        print(f"Returns:")
-        print(f"  Total Return:        {metrics['total_return']:>10.2%}")
-        print(f"  Annualized Return:   {metrics['annualized_return']:>10.2%}")
-
-        print(f"Risk:")
-        print(f"  Annualized Vol:      {metrics['annualized_volatility']:>10.2%}")
-        print(f"  Max Drawdown:        {metrics['max_drawdown']:>10.2%}")
-
-        print(f"Risk-Adjusted:")
-        print(f"  Sharpe Ratio:        {metrics['sharpe_ratio']:>10.2f}")
-        print(f"  Sortino Ratio:       {metrics['sortino_ratio']:>10.2f}")
-        print(f"  Calmar Ratio:        {metrics['calmar_ratio']:>10.2f}")
-
-        print(f"Trading:")
-        print(f"  Win Rate:            {metrics['win_rate']:>10.2%}")
-        print(f"  Profit Factor:       {metrics['profit_factor']:>10.2f}")
-        print(f"  Avg Win (daily):     {metrics['avg_win']:>10.4%}")
-        print(f"  Avg Loss (daily):    {metrics['avg_loss']:>10.4%}")
-        print(f"  Win/Loss Ratio:      {metrics['win_loss_ratio']:>10.2f}")
-        print(f"  Active Trading Days: {metrics['n_active_days']:>10.0f}")
-        print(f"  Growing Season Yrs:  {metrics['n_active_years']:>10.1f}")
+        print("-" * 60)
+        print("Returns:")
+        print(f"  Total Return:        {m['total_return']:>10.2%}")
+        print(f"  Annualized Return:   {m['annualized_return']:>10.2%}")
+        print("Risk:")
+        print(f"  Annualized Vol:      {m['annualized_volatility']:>10.2%}")
+        print(f"  Max Drawdown:        {m['max_drawdown']:>10.2%}")
+        print("Risk-Adjusted:")
+        print(f"  Sharpe Ratio:        {m['sharpe_ratio']:>10.2f}")
+        print(f"  Sortino Ratio:       {m['sortino_ratio']:>10.2f}")
+        print(f"  Calmar Ratio:        {m['calmar_ratio']:>10.2f}")
+        print("Trading:")
+        print(f"  Win Rate:            {m['win_rate']:>10.2%}")
+        print(f"  Profit Factor:       {m['profit_factor']:>10.2f}")
+        print(f"  Avg Win (daily):     {m['avg_win']:>10.4%}")
+        print(f"  Avg Loss (daily):    {m['avg_loss']:>10.4%}")
+        print(f"  Win/Loss Ratio:      {m['win_loss_ratio']:>10.2f}")
+        print(f"  Active Trading Days: {m['n_active_days']:>10.0f}")
+        print(f"  Growing Season Yrs:  {m['n_active_years']:>10.1f}")
 
     print("=" * 60 + "\n")
-
-
-def print_metrics(metrics: Dict):
-    """Pretty print metrics (active trading periods only)."""
-    print("\n" + "=" * 60)
-    print("BACKTEST PERFORMANCE METRICS (Active Trading Days Only)")
-    print("=" * 60)
-
-    print(f"\nReturns:")
-    print(f"  Total Return:        {metrics['total_return']:>10.2%}")
-    print(f"  Annualized Return:   {metrics['annualized_return']:>10.2%}")
-
-    print(f"\nRisk:")
-    print(f"  Annualized Vol:      {metrics['annualized_volatility']:>10.2%}")
-    print(f"  Max Drawdown:        {metrics['max_drawdown']:>10.2%}")
-
-    print(f"\nRisk-Adjusted:")
-    print(f"  Sharpe Ratio:        {metrics['sharpe_ratio']:>10.2f}")
-    print(f"  Sortino Ratio:       {metrics['sortino_ratio']:>10.2f}")
-    print(f"  Calmar Ratio:        {metrics['calmar_ratio']:>10.2f}")
-
-    print(f"\nTrading:")
-    print(f"  Win Rate:            {metrics['win_rate']:>10.2%}")
-    print(f"  Profit Factor:       {metrics['profit_factor']:>10.2f}")
-    print(f"  Avg Win (daily):     {metrics['avg_win']:>10.4%}")
-    print(f"  Avg Loss (daily):    {metrics['avg_loss']:>10.4%}")
-    print(f"  Win/Loss Ratio:      {metrics['win_loss_ratio']:>10.2f}")
-    print(f"  Active Trading Days: {metrics['n_active_days']:>10.0f}")
-    print(f"  Growing Season Yrs:  {metrics['n_active_years']:>10.1f}")
-
-
-def print_attribution(attribution: Dict[str, Dict]):
-    """Pretty print per-commodity attribution."""
-    print("\n" + "=" * 60)
-    print("PER-COMMODITY ATTRIBUTION")
-    print("=" * 60)
-
-    for commodity, stats in attribution.items():
-        if stats.get('active_days', 0) == 0:
-            print(f"\n  {commodity.upper()}: No active trading days")
-            continue
-
-        print(f"\n  {commodity.upper()}")
-        print(f"  {'─' * 30}")
-        print(f"  Active Days:         {stats['active_days']:>10.0f}")
-        print(f"  Active Years:        {stats['active_years']:>10.2f}")
-        print(f"  Return Contribution: {stats['return_contribution_pct']:>10.1f}%")
-        print(f"  Attributed Ann Ret:  {stats['attributed_annualized_return']:>10.2%}")
-        print(f"  Attributed Vol:      {stats['attributed_vol']:>10.2%}")
-        print(f"  Attributed Sharpe:   {stats['attributed_sharpe']:>10.2f}")
-        print(f"  Win Rate:            {stats['win_rate']:>10.2%}")
-        print(f"  Avg Position Size:   {stats['avg_position_size']:>10.3f}")
-        print(f"  Avg Signal Strength: {stats['avg_signal_strength']:>10.3f}")
-
-    print("\n" + "=" * 60 + "\n")

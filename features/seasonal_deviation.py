@@ -1,61 +1,44 @@
 """
-Compute seasonal deviations (Z-scores) from historical baseline.
-No look-ahead bias: baseline uses only data prior to each observation.
+Seasonal anomalies: how unusual is today's weather *for this calendar day*?
+
+    z = (x - mean of the same calendar day in earlier years) / std of the same
+
+The baseline for a given day only ever contains observations from strictly earlier years
+(an expanding mean/std shifted by one year), so the value computed for day ``t`` can never
+depend on data after ``t`` -- no look-ahead.
+
+Warm-up: until a calendar day has two earlier years the baseline std is undefined and the
+z-score is NaN. NaN is deliberately left as is: downstream code treats it as "no anomaly".
+(An earlier version filled these with the mean and std of the *whole* sample, which leaked
+future information into the first years.)
 """
 import pandas as pd
-import numpy as np
 from loguru import logger
 
+# Weather variables that get a ``<name>_z`` anomaly column.
+ANOMALY_VARIABLES = ['temp_avg', 'temp_max', 'temp_min', 'precipitation']
 
-def compute_seasonal_deviations(df: pd.DataFrame,
-                                 baseline_years: int = 20) -> pd.DataFrame:
-    """
-    Compute Z-scores for weather variables relative to seasonal baseline.
-    Z-score = (X_t - μ_season) / σ_season
 
-    For each calendar day group, expanding mean/std is shifted by 1 year
-    to ensure strict no look-ahead.
-
-    Args:
-        df: DataFrame with date, temp_max, temp_min, precipitation, etc.
-        baseline_years: Not used directly (expanding window handles this)
-
-    Returns:
-        DataFrame with additional Z-score columns
-    """
+def compute_seasonal_deviations(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` (sorted by date) with a z-score column for each anomaly variable."""
     df = df.copy()
-
-    # Ensure date is datetime and sorted
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date').reset_index(drop=True)
 
-    # Extract grouping keys
-    df['month_day'] = df['date'].dt.strftime('%m-%d')
-    df['year'] = df['date'].dt.year
+    # Group rows by calendar day (e.g. every 06-15) to build each day's multi-year baseline.
+    month_day = df['date'].dt.strftime('%m-%d')
 
-    # Store original index order so we can re-align after groupby operations
-    df['_orig_idx'] = df.index
-
-    variables = ['temp_avg', 'temp_max', 'temp_min', 'precipitation']
-
-    for var in variables:
+    for var in ANOMALY_VARIABLES:
         if var not in df.columns:
             logger.warning(f"Variable {var} not found in DataFrame, skipping")
             continue
 
-        global_mean = df[var].mean()
-        global_std = df[var].std() if df[var].std() > 0 else 1.0
+        grouped = df.groupby(month_day, sort=False)[var]
+        seasonal_mean = grouped.transform(lambda x: x.expanding().mean().shift(1))
+        seasonal_std = grouped.transform(lambda x: x.expanding().std().shift(1))
 
-        grp = df.groupby('month_day', sort=False)[var]
-        seas_mean = grp.transform(lambda x: x.expanding().mean().shift(1)).fillna(global_mean)
-        seas_std  = grp.transform(lambda x: x.expanding().std().shift(1)).fillna(global_std)
+        # The 1e-6 keeps the division finite when a baseline has zero variance.
+        df[f'{var}_z'] = (df[var] - seasonal_mean) / (seasonal_std + 1e-6)
 
-        # Compute Z-score
-        df[f'{var}_z'] = (df[var] - seas_mean) / (seas_std + 1e-6)
-
-    # Clean up helper columns
-    df = df.drop(columns=['month_day', 'year', '_orig_idx'])
-
-    logger.debug(f"Computed seasonal deviations for {len(variables)} variables")
-
+    logger.debug(f"Computed seasonal deviations for {len(ANOMALY_VARIABLES)} variables")
     return df

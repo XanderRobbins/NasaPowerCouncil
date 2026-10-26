@@ -1,185 +1,119 @@
 """
-NASA POWER API client for fetching climate data.
+NASA POWER client: daily point weather for each of a commodity's production regions.
+
+Downloaded history never changes, so each region/date-range is cached forever as a pickle
+in ``data_storage/raw/climate/`` (delete the file to force a re-download).
+
+Note on timing: NASA POWER publishes with a 1-2+ day delay. The backtest accounts for this
+with ``FEATURE_LAG_DAYS`` (see ``backtest/engine.py``); this module only downloads.
 """
-import requests
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from typing import List, Dict, Optional
-from datetime import datetime
 import time
+from typing import Dict
+
+import numpy as np
+import pandas as pd
+import requests
 from loguru import logger
 
+from config.regions import get_commodity_regions
 from config.settings import NASA_POWER_BASE_URL, RAW_DATA_PATH
 
+# NASA's API parameter names -> the short column names used throughout this project.
+PARAMETER_COLUMNS = {
+    'T2M': 'temp_avg',                  # mean temperature at 2 m (deg C)
+    'T2M_MAX': 'temp_max',              # max temperature (deg C)
+    'T2M_MIN': 'temp_min',              # min temperature (deg C)
+    'PRECTOTCORR': 'precipitation',     # precipitation (mm/day)
+    'ALLSKY_SFC_SW_DWN': 'solar_radiation',
+    'WS2M': 'wind_speed',
+    'RH2M': 'relative_humidity',
+}
+MISSING_VALUE = -999  # NASA's "no data" marker
+
+# Sanity bound on average rainfall (mm/day). Crop regions average 1-6; the wettest places
+# on Earth about 30. NASA's near-real-time data has been seen returning rainfall multiplied
+# by 24 for a whole request while still labelled mm/day, which would silently corrupt every
+# dryness feature, so such responses are rejected instead of cached.
+MAX_PLAUSIBLE_MEAN_PRECIP = 25.0
+
+
 class NASAPowerFetcher:
-    """
-    Fetch daily climate data from NASA POWER API.
-    
-    Parameters available:
-    - T2M: Temperature at 2 meters (°C)
-    - T2M_MAX: Maximum temperature (°C)
-    - T2M_MIN: Minimum temperature (°C)
-    - PRECTOTCORR: Precipitation (mm/day)
-    - ALLSKY_SFC_SW_DWN: Solar radiation (MJ/m²/day)
-    - WS2M: Wind speed at 2 meters (m/s)
-    - RH2M: Relative humidity at 2 meters (%)
-    """
-    
-    PARAMETERS = [
-        'T2M',                  # Avg temp
-        'T2M_MAX',             # Max temp
-        'T2M_MIN',             # Min temp
-        'PRECTOTCORR',         # Precipitation
-        'ALLSKY_SFC_SW_DWN',   # Solar radiation
-        'WS2M',                # Wind speed
-        'RH2M'                 # Relative humidity
-    ]
-    
+    """Fetch (and cache) daily climate data from the NASA POWER API."""
+
     def __init__(self, base_url: str = NASA_POWER_BASE_URL):
         self.base_url = base_url
         self.cache_dir = RAW_DATA_PATH / 'climate'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
-    def fetch_region(self,
-                    lat: float,
-                    lon: float,
-                    start_date: str,
-                    end_date: str,
-                    region_name: str) -> pd.DataFrame:
+
+    def fetch_region(self, lat: float, lon: float, start_date: str, end_date: str,
+                     region_name: str) -> pd.DataFrame:
         """
-        Fetch climate data for a specific region and date range.
-        
-        Args:
-            lat: Latitude
-            lon: Longitude
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            region_name: Name for caching
-            
-        Returns:
-            DataFrame with daily climate data
+        Daily weather for one point between ``start_date`` and ``end_date`` (YYYY-MM-DD).
+
+        ``region_name`` is only used to name the cache file and the ``region`` column.
         """
-        # Check cache first
         cache_file = self.cache_dir / f"{region_name}_{start_date}_{end_date}.pkl"
         if cache_file.exists():
             logger.info(f"Loading cached data for {region_name}")
             return pd.read_pickle(cache_file)
-        
-        # Format dates
-        start_date_fmt = pd.to_datetime(start_date).strftime('%Y%m%d')
-        end_date_fmt = pd.to_datetime(end_date).strftime('%Y%m%d')
-        
-        # Build URL
-        params = ','.join(self.PARAMETERS)
-        url = (f"{self.base_url}?"
-               f"parameters={params}&"
-               f"community=AG&"
-               f"longitude={lon}&"
-               f"latitude={lat}&"
-               f"start={start_date_fmt}&"
-               f"end={end_date_fmt}&"
-               f"format=JSON")
-        
+
+        params = {
+            'parameters': ','.join(PARAMETER_COLUMNS),
+            'community': 'AG',  # agroclimatology community
+            'longitude': lon,
+            'latitude': lat,
+            'start': pd.to_datetime(start_date).strftime('%Y%m%d'),
+            'end': pd.to_datetime(end_date).strftime('%Y%m%d'),
+            'format': 'JSON',
+        }
         logger.info(f"Fetching NASA POWER data for {region_name} ({lat}, {lon})")
-        
+
         try:
-            response = requests.get(url, timeout=30)
+            response = requests.get(self.base_url, params=params, timeout=30)
             response.raise_for_status()
-            data = response.json()
-            
-            # Parse response
-            df = self._parse_response(data, region_name)
-            
-            # Cache
-            df.to_pickle(cache_file)
-            logger.info(f"Cached data for {region_name}")
-            
-            # Rate limit: NASA POWER has limits
-            time.sleep(1)
-            
-            return df
-        
+            df = self._parse_response(response.json(), region_name)
         except requests.RequestException as e:
             logger.error(f"Failed to fetch data for {region_name}: {e}")
             raise
-    
-    def _parse_response(self, data: dict, region_name: str) -> pd.DataFrame:
-        """Parse NASA POWER JSON response into DataFrame."""
-        parameters = data['properties']['parameter']
-        
-        # Extract time series
-        records = []
-        for param_name, param_data in parameters.items():
-            for date_str, value in param_data.items():
-                # Find or create record for this date
-                date = pd.to_datetime(date_str, format='%Y%m%d')
-                
-                # Find existing record
-                record = next((r for r in records if r['date'] == date), None)
-                if record is None:
-                    record = {'date': date, 'region': region_name}
-                    records.append(record)
-                
-                # Map parameter name to simpler name
-                param_map = {
-                    'T2M': 'temp_avg',
-                    'T2M_MAX': 'temp_max',
-                    'T2M_MIN': 'temp_min',
-                    'PRECTOTCORR': 'precipitation',
-                    'ALLSKY_SFC_SW_DWN': 'solar_radiation',
-                    'WS2M': 'wind_speed',
-                    'RH2M': 'relative_humidity'
-                }
-                
-                record[param_map.get(param_name, param_name)] = value
-        
-        df = pd.DataFrame(records)
-        df = df.sort_values('date').reset_index(drop=True)
-        
-        # Replace missing value indicators (-999) with NaN
-        df = df.replace(-999, np.nan)
-        
+
+        self._check_precipitation_units(df, region_name)
+        df.to_pickle(cache_file)
+        logger.info(f"Cached data for {region_name}")
+        time.sleep(1)  # NASA POWER is rate limited; be polite after each live call
         return df
-    
-    def fetch_commodity_regions(self,
-                               commodity: str,
-                               start_date: str,
-                               end_date: str) -> Dict[str, pd.DataFrame]:
+
+    @staticmethod
+    def _parse_response(data: dict, region_name: str) -> pd.DataFrame:
         """
-        Fetch climate data for all regions of a commodity.
-        
-        Returns:
-            Dict mapping region names to DataFrames
+        Turn the JSON payload ``{parameter: {YYYYMMDD: value}}`` into one row per day with a
+        column per variable, plus ``date`` and ``region``. -999 becomes NaN.
         """
-        from config.regions import get_commodity_regions
-        
-        regions = get_commodity_regions(commodity)
+        wide = pd.DataFrame(data['properties']['parameter'])
+        wide.index = pd.to_datetime(wide.index, format='%Y%m%d')
+        wide = wide.rename(columns=PARAMETER_COLUMNS).replace(MISSING_VALUE, np.nan)
+
+        df = wide.rename_axis('date').sort_index().reset_index()
+        df.insert(1, 'region', region_name)
+        return df
+
+    @staticmethod
+    def _check_precipitation_units(df: pd.DataFrame, region_name: str) -> None:
+        """Refuse a response whose rainfall is in the wrong unit (see MAX_PLAUSIBLE_MEAN_PRECIP)."""
+        if 'precipitation' not in df or len(df) < 60:
+            return
+        mean = df['precipitation'].mean()
+        if mean > MAX_PLAUSIBLE_MEAN_PRECIP:
+            raise ValueError(
+                f"NASA POWER precipitation for {region_name} averages {mean:.1f} mm/day, which is "
+                f"implausible (known API quirk near the newest data). Request a range ending earlier."
+            )
+
+    def fetch_commodity_regions(self, commodity: str, start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
+        """Weather frames keyed by region name for every production region of ``commodity``."""
         region_data = {}
-        
-        for region_name, region_info in regions.items():
-            lat = region_info['lat']
-            lon = region_info['lon']
-            
-            df = self.fetch_region(lat, lon, start_date, end_date,
-                                  f"{commodity}_{region_name}")
-            region_data[region_name] = df
-        
+        for region_name, info in get_commodity_regions(commodity).items():
+            region_data[region_name] = self.fetch_region(
+                info['lat'], info['lon'], start_date, end_date, f"{commodity}_{region_name}"
+            )
         logger.info(f"Fetched climate data for {len(region_data)} regions of {commodity}")
         return region_data
-
-
-def fetch_commodity_regions(commodity: str, start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
-    """
-    Convenience function to fetch climate data for all regions of a commodity.
-    
-    Args:
-        commodity: Commodity name
-        start_date: Start date (YYYY-MM-DD)
-        end_date: End date (YYYY-MM-DD)
-        
-    Returns:
-        Dict mapping region names to DataFrames
-    """
-    fetcher = NASAPowerFetcher()
-    return fetcher.fetch_commodity_regions(commodity, start_date, end_date)

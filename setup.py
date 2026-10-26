@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="nasapowercouncil",
-    version="2.0.0",
-    description="Weather-based commodity futures trading system",
+    version="2.1.0",
+    description="Weather-based commodity futures trading research system",
     author="Alexander Robbins",
     packages=find_packages(),
     install_requires=[
@@ -16,5 +16,10 @@ setup(
         "loguru>=0.7.0",
         "matplotlib>=3.7.0",
     ],
+    extras_require={
+        "report": ["quantstats>=0.0.62"],
+        "xgboost": ["xgboost>=2.0"],
+        "dev": ["pytest>=7.4.0"],
+    },
     python_requires=">=3.9",
 )

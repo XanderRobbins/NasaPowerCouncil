@@ -1,63 +1,69 @@
 """
-Parameter sweep — tests each hyperparameter independently and reports
-the best value by Sharpe ratio. Runs main.py as a subprocess with
-env overrides so module-level settings reload cleanly each run.
+One-at-a-time parameter sweep: re-run ``main.py`` with one setting changed and report the
+Sharpe ratio, total return and max drawdown for each value.
+
+    python sweep.py
+
+Each run is a separate process with environment overrides, so the module-level settings in
+``config/settings.py`` reload cleanly every time.
+
+CAUTION: every number this prints is in-sample. Picking the "best" value and quoting its
+Sharpe is exactly how backtests get overfitted. With only ~10-20 seasons, differences
+between neighbouring values are mostly noise. Use it to see how *sensitive* results are,
+not to choose parameters.
 """
-import subprocess
 import os
 import re
+import subprocess
 import sys
 
-# Baseline values (current .env settings)
+# Baseline: the defaults in config/settings.py. Each sweep changes one setting, the rest stay here.
 BASE = {
-    'FORWARD_RETURN_DAYS': '21',
+    'FORWARD_RETURN_DAYS': '10',
     'RIDGE_ALPHA': '1.0',
-    'TRAIN_WINDOW_YEARS': '5',
-    'SOYBEANS_VOL_REGIME_THRESHOLD': '0.20',
+    'TRAIN_WINDOW_YEARS': '3',
+    'CORN_VOL_REGIME_THRESHOLD': '0.30',
 }
 
+# Values to try for each setting.
 SWEEPS = {
-    'FORWARD_RETURN_DAYS':           [14, 21, 28, 35, 45],
-    'RIDGE_ALPHA':                   [0.1, 0.5, 1.0, 5.0, 10.0],
-    'TRAIN_WINDOW_YEARS':            [3, 5, 7, 10],
-    'SOYBEANS_VOL_REGIME_THRESHOLD': [0.15, 0.17, 0.20, 0.22],
+    'FORWARD_RETURN_DAYS':       [10, 14, 21, 28, 35],
+    'RIDGE_ALPHA':               [0.1, 0.5, 1.0, 5.0, 10.0],
+    'TRAIN_WINDOW_YEARS':        [2, 3, 5, 7],
+    'CORN_VOL_REGIME_THRESHOLD': [0.20, 0.25, 0.30, 0.40],
 }
+
+NO_RESULT = {'sharpe': None, 'total_return': None, 'max_dd': None}
 
 
 def run_backtest(overrides: dict) -> dict:
+    """Run ``main.py`` with BASE plus ``overrides`` and scrape the printed metrics."""
     env = os.environ.copy()
-    for k, v in BASE.items():
-        env[k] = str(v)
-    for k, v in overrides.items():
-        env[k] = str(v)
+    env.update({k: str(v) for k, v in BASE.items()})
+    env.update({k: str(v) for k, v in overrides.items()})
 
     try:
-        proc = subprocess.run(
-            [sys.executable, 'main.py'],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=360,
-        )
+        proc = subprocess.run([sys.executable, 'main.py'], env=env,
+                              capture_output=True, text=True, timeout=360)
     except subprocess.TimeoutExpired:
         print(' TIMEOUT', flush=True)
-        return {'sharpe': None, 'total_return': None, 'max_dd': None}
+        return NO_RESULT
     except Exception as e:
         print(f' ERROR: {e}', flush=True)
-        return {'sharpe': None, 'total_return': None, 'max_dd': None}
+        return NO_RESULT
 
     if proc.returncode != 0:
         print(f' FAILED (exit {proc.returncode})', flush=True)
-        return {'sharpe': None, 'total_return': None, 'max_dd': None}
+        return NO_RESULT
 
-    out = proc.stdout + proc.stderr
+    output = proc.stdout + proc.stderr
 
     def extract(pattern):
-        m = re.search(pattern, out)
-        if m is None:
+        match = re.search(pattern, output)
+        if match is None:
             print(f' [warn] pattern not found: {pattern}', flush=True)
             return None
-        return float(m.group(1))
+        return float(match.group(1))
 
     return {
         'sharpe':       extract(r'Sharpe Ratio:\s+([\d.-]+)'),
@@ -66,39 +72,35 @@ def run_backtest(overrides: dict) -> dict:
     }
 
 
-best_params = {}
+def main():
+    best_params = {}
 
-for param, values in SWEEPS.items():
-    print(f"\n{'='*55}")
-    print(f"Sweeping {param}")
-    print(f"{'='*55}")
+    for param, values in SWEEPS.items():
+        print(f"\n{'=' * 55}\nSweeping {param}\n{'=' * 55}")
 
-    rows = []
-    for val in values:
-        label = f"  {param}={val}"
-        print(f"{label:<40}", end='', flush=True)
-        metrics = run_backtest({param: val})
-        s = metrics['sharpe']
-        r = metrics['total_return']
-        d = metrics['max_dd']
-        s_str = f"{s:>5.3f}" if s is not None else "  N/A"
-        r_str = f"{r:>6.2f}%" if r is not None else "   N/A"
-        d_str = f"{d:>6.2f}%" if d is not None else "   N/A"
-        print(f"Sharpe={s_str}  Return={r_str}  MaxDD={d_str}")
-        rows.append((val, s, metrics))
+        rows = []
+        for value in values:
+            print(f"{f'  {param}={value}':<40}", end='', flush=True)
+            metrics = run_backtest({param: value})
+            fmt = lambda x, spec: format(x, spec) if x is not None else 'N/A'
+            print(f"Sharpe={fmt(metrics['sharpe'], '>5.3f')}  "
+                  f"Return={fmt(metrics['total_return'], '>6.2f')}%  "
+                  f"MaxDD={fmt(metrics['max_dd'], '>6.2f')}%")
+            rows.append((value, metrics['sharpe']))
 
-    valid_rows = [(val, s, m) for val, s, m in rows if s is not None]
-    if not valid_rows:
-        print(f"\n  --> No valid runs for {param}, skipping")
-        continue
-    best_val, best_sharpe, _ = max(valid_rows, key=lambda x: x[1])
-    best_params[param] = best_val
-    print(f"\n  --> Best: {param}={best_val}  (Sharpe {best_sharpe:.3f})")
+        valid = [(v, s) for v, s in rows if s is not None]
+        if not valid:
+            print(f"\n  --> No valid runs for {param}, skipping")
+            continue
+        best_value, best_sharpe = max(valid, key=lambda r: r[1])
+        best_params[param] = best_value
+        print(f"\n  --> Highest in-sample Sharpe: {param}={best_value}  ({best_sharpe:.3f})")
 
-print(f"\n{'='*55}")
-print("OPTIMAL PARAMETERS")
-print(f"{'='*55}")
-for k, v in best_params.items():
-    changed = '  <-- changed' if str(v) != BASE[k] else ''
-    print(f"  {k}={v}{changed}")
-print(f"{'='*55}")
+    print(f"\n{'=' * 55}\nHIGHEST-SHARPE VALUES (in-sample; do not over-trust)\n{'=' * 55}")
+    for param, value in best_params.items():
+        marker = '  <-- differs from default' if str(value) != BASE[param] else ''
+        print(f"  {param}={value}{marker}")
+
+
+if __name__ == '__main__':
+    main()
